@@ -1,0 +1,58 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         Int        @id @default(autoincrement())
+  email      String     @unique
+  password   String
+  name       String?
+  strategies Strategy[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+}
+
+model Strategy {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  name           String
+  isArchived     Boolean  @default(false)
+  defaultLots    Int      @default(1)
+  underlying     String   @default("NIFTY")
+  atmBasis       String   @default("spot") // "spot" | "futures"
+  selectedExpiry String? // "YYYY-MM-DD"
+  realized       Float    @default(0) // running realized P/L
+  legs           Leg[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model Leg {
+  id         Int    @id @default(autoincrement())
+  strategyId Int
+  // status: "STAGED" | "OPEN" | "CLOSED"  (use String since enums not supported on sqlite)
+  status     String @default("STAGED")
+  // side: "BUY" | "SELL"
+  side       String
+  // type: "CE" | "PE"
+  type       String
+  strike     Int
+  premium    Float  @default(0) // quoted/staged price
+  lots       Int    @default(1)
+  expiry     String // "YYYY-MM-DD"
+
+  entryPrice Float?
+  exitPrice  Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  strategy Strategy @relation(fields: [strategyId], references: [id])
+}

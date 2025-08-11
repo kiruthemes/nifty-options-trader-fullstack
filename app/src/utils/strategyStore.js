@@ -1,149 +1,193 @@
-import { isAuthed, getToken } from './auth.js';
+// app/src/utils/strategyStore.js
+// DB-first strategy store. Current strategy is tracked on the server (User.lastStrategyId).
 
-const META_KEY = "strategies.meta";
-const CURR_KEY = "strategies.current";
+import { getToken } from "./auth.js";
 
-export function getCurrentId() { return localStorage.getItem(CURR_KEY) || null; }
-export function setCurrentId(id) { if (id) localStorage.setItem(CURR_KEY, String(id)); }
+const API = import.meta.env.VITE_API_BASE || "";
 
-async function api(path, opts = {}) {
-  const token = getToken();
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`/api${path}`, { ...opts, headers });
-  const text = await res.text();
-  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { errorText: text }; }
-  if (!res.ok) throw new Error(data?.error || data?.message || data?.errorText || `HTTP ${res.status}`);
-  return data;
+/* ---------------- internal fetch helpers ---------------- */
+function authHeaders() {
+  const t = getToken?.();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+async function j(res) {
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `HTTP ${res.status}`);
+  }
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : {};
+}
+async function api(path, init = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...authHeaders(),
+    ...(init.headers || {}),
+  };
+  const url = path.startsWith("/api") ? `${API}${path}` : `${API}/api${path}`;
+  const res = await fetch(url, { ...init, headers });
+  return j(res);
 }
 
-/* ---------- Strategies ---------- */
-export async function listAsync(includeArchived=false) {
-  if (isAuthed()) {
-    const list = await api(`/strategies?includeArchived=${includeArchived ? 1 : 0}`);
-    try { localStorage.setItem(META_KEY, JSON.stringify(list)); } catch {}
-    return list.map(s => ({ id: String(s.id), name: s.name, archived: !!s.archived, updatedAt: s.updatedAt }));
+/* ---------------- current strategy id (DB-backed) ---------------- */
+export async function getCurrentIdAsync() {
+  try {
+    const r = await api(`/strategies/last`);
+    return r?.id ?? null;
+  } catch {
+    return null;
   }
-  try { return JSON.parse(localStorage.getItem(META_KEY) || "[]"); } catch { return []; }
 }
 
-export async function createAsync(name='Untitled Strategy') {
-  if (isAuthed()) {
-    const r = await api(`/strategies`, { method:'POST', body: JSON.stringify({ name }) });
-    const id = String(r.id);
-    await listAsync(true);
-    setCurrentId(id);
-    window.dispatchEvent(new CustomEvent('strategy:selected', { detail: id }));
-    return id;
-  }
-  // local fallback only if not authed
-  const id = `local_${Date.now()}`;
-  const m = await listAsync(true);
-  m.unshift({ id, name, archived:false, updatedAt: new Date().toISOString() });
-  localStorage.setItem(META_KEY, JSON.stringify(m));
-  setCurrentId(id);
-  window.dispatchEvent(new CustomEvent('strategy:selected', { detail: id }));
-  return id;
+export async function setCurrentIdAsync(id) {
+  if (!id) return;
+  await api(`/strategies/${id}/select`, { method: "POST" });
+}
+
+/** No-op legacy helpers kept for compatibility */
+export function getCurrentId() { return null; }
+export function setCurrentId(_id) { /* no-op; server owns this now */ }
+
+/** Clear any client-local pointers on logout (kept for callers) */
+export function clearCurrentId() { /* no-op */ }
+export function resetLocalOnLogout() { clearCurrentId(); }
+
+/* ---------------- list / get / create / patch ---------------- */
+export async function listAsync(includeArchived = false) {
+  const q = includeArchived ? "?includeArchived=1" : "";
+  const items = await api(`/strategies${q}`);
+  return Array.isArray(items) ? items : [];
 }
 
 export async function getAsync(id) {
-  if (!id) id = getCurrentId();
   if (!id) return null;
-  if (isAuthed()) return api(`/strategies/${id}`);
-  const list = await listAsync(true);
-  const meta = list.find(x => String(x.id) === String(id));
-  return meta ? { id: meta.id, name: meta.name, legs: [] } : null;
-}
-
-export async function setArchived(id, archived=true) {
-  if (isAuthed()) {
-    await api(`/strategies/${id}`, { method:'PATCH', body: JSON.stringify({ archived }) });
-    await listAsync(true);
-    if (String(getCurrentId()) === String(id) && archived) {
-      const next = (await listAsync(false))[0]?.id;
-      if (next) {
-        setCurrentId(String(next));
-        window.dispatchEvent(new CustomEvent('strategy:selected', { detail: String(next) }));
-      }
-    }
-    return;
+  try {
+    return await api(`/strategies/${id}`); // includes legs + {state?}
+  } catch {
+    return null;
   }
 }
 
-export async function updatePrefs(id, patch) {
-  if (!id) id = getCurrentId();
-  if (!id) return;
-  if (isAuthed()) await api(`/strategies/${id}`, { method:'PATCH', body: JSON.stringify(patch || {}) });
-}
-
-/* ---------- Legs ---------- */
-export async function listLegs(id) {
-  if (!id) id = getCurrentId();
-  if (!id) return [];
-  if (isAuthed()) {
-    const r = await api(`/legs?strategyId=${encodeURIComponent(id)}`);
-    return Array.isArray(r?.legs) ? r.legs : [];
-  }
-  return []; // local mode: not persisted
-}
-
-export async function createLeg(id, leg) {
-  if (!id) id = getCurrentId();
+/** Minimal meta for topbar */
+export async function getMetaByIdAsync(id) {
   if (!id) return null;
-  if (isAuthed()) return api(`/legs`, { method:'POST', body: JSON.stringify({ ...leg, strategyId: id }) });
-  return { ...leg, id: `local_${Date.now()}` };
-}
-
-export async function updateLeg(legId, patch) {
-  if (!isAuthed()) return null;
-  return api(`/legs/${legId}`, { method:'PATCH', body: JSON.stringify(patch || {}) });
-}
-
-export async function deleteLeg(legId) {
-  if (!isAuthed()) return null;
-  return api(`/legs/${legId}`, { method:'DELETE' });
-}
-
-/* ---------- Legacy state helpers (Dashboard expects these) ---------- */
-export async function loadStateAsync(id) {
-  if (!id) id = getCurrentId();
-  if (!id) return null;
-  const full = await getAsync(id);
-  // Normalize to legacy blob
-  const legs = Array.isArray(full?.legs) ? full.legs : [];
-  const liveLegs = legs.filter(l => (l.status || "").toUpperCase() === "OPEN");
-  const stagedLegs = legs.filter(l => (l.status || "").toUpperCase() === "STAGED");
+  const s = await getAsync(id);
+  if (!s) return null;
   return {
-    liveLegs: liveLegs.map(mapLeg),
-    stagedLegs: stagedLegs.map(mapLeg),
-    realized: Number(full?.realized || 0),
-    defaultLots: Number(full?.defaultLots || 1),
-    atmBasis: full?.atmBasis || "spot",
-    underlying: full?.underlying || "NIFTY",
-    selectedExpiry: full?.selectedExpiry || null,
+    id: s.id,
+    name: s.name,
+    archived: !!(s.archived ?? s.isArchived),
+    isArchived: !!(s.isArchived ?? s.archived),
+    updatedAt: s.updatedAt,
+    createdAt: s.createdAt,
   };
 }
 
-export async function saveState(id, state) {
-  // no-op: we persist via legs & strategy prefs now
-  if (!id) id = getCurrentId();
-  if (!id) return;
-  await updatePrefs(id, {
-    defaultLots: state?.defaultLots,
-    atmBasis: state?.atmBasis,
-    selectedExpiry: state?.selectedExpiry,
-    underlying: state?.underlying,
+export async function createAsync(name = "Untitled Strategy", defaultLots = 1) {
+  const r = await api(`/strategies`, {
+    method: "POST",
+    body: JSON.stringify({ name, defaultLots }),
+  });
+  // server also marks it as selected
+  return r.id;
+}
+
+export async function setArchived(id, archived = true) {
+  return api(`/strategies/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ archived }),
   });
 }
 
-function mapLeg(l) {
-  return {
-    id: l.id,
-    side: l.side,
-    type: l.type,
+/**
+ * Save *preferences* on strategy (not legs).
+ * Columns: defaultLots, atmBasis, selectedExpiry, underlying, realized?
+ */
+export async function saveState(id, prefs = {}) {
+  if (!id) return;
+  const payload = {};
+  if (prefs.defaultLots != null) payload.defaultLots = Number(prefs.defaultLots) || 1;
+  if (prefs.atmBasis) payload.atmBasis = String(prefs.atmBasis);
+  if (prefs.selectedExpiry) payload.selectedExpiry = String(prefs.selectedExpiry);
+  if (prefs.underlying) payload.underlying = String(prefs.underlying);
+  if (typeof prefs.realized === "number") payload.realized = Number(prefs.realized);
+  if (Object.keys(payload).length === 0) return;
+  await api(`/strategies/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+/**
+ * Load normalized state for the strategy.
+ * Returns { liveLegs, stagedLegs, realized, defaultLots, atmBasis, underlying, selectedExpiry }
+ */
+export async function loadStateAsync(id) {
+  if (!id) return null;
+
+  const full = await getAsync(id);
+  if (!full) return null;
+
+  // Prefer server snapshot if present
+  const s = full.state;
+  if (s && (Array.isArray(s.liveLegs) || Array.isArray(s.stagedLegs))) {
+    return {
+      liveLegs: s.liveLegs || [],
+      stagedLegs: s.stagedLegs || [],
+      realized: Number(s.realized) || 0,
+      defaultLots: Number(s.defaultLots) || 1,
+      atmBasis: s.atmBasis || "spot",
+      underlying: s.underlying || "NIFTY",
+      selectedExpiry: s.selectedExpiry || null,
+    };
+  }
+
+  // Otherwise derive from DB legs + top-level fields
+  const dbLegs = Array.isArray(full.legs) ? full.legs : [];
+  const normLeg = (l) => ({
+    side: (l.side || "BUY").toUpperCase(),
+    type: (l.type || "CE").toUpperCase(),
     strike: Number(l.strike) || 0,
     premium: Number(l.entryPrice ?? l.premium ?? 0),
-    lots: Number(l.lots || 1),
-    expiry: l.expiry,
+    expiry: l.expiry || full.selectedExpiry || null,
+    lots: Number(l.lots ?? 1),
+    id: l.id,
+  });
+  const liveLegs = dbLegs.filter((l) => (l.status || "").toUpperCase() === "OPEN").map(normLeg);
+  const stagedLegs = dbLegs.filter((l) => (l.status || "").toUpperCase() === "STAGED").map(normLeg);
+
+  return {
+    liveLegs,
+    stagedLegs,
+    realized: Number(full.realized ?? 0),
+    defaultLots: Number(full.defaultLots ?? 1),
+    atmBasis: full.atmBasis || "spot",
+    underlying: full.underlying || "NIFTY",
+    selectedExpiry: full.selectedExpiry || null,
   };
 }
+
+/* ---------------- legs (DB-backed) ---------------- */
+export async function createLeg(strategyId, leg) {
+  return api(`/legs`, {
+    method: "POST",
+    body: JSON.stringify({
+      strategyId,
+      side: String(leg.side || "BUY").toUpperCase(),
+      type: String(leg.type || "CE").toUpperCase(),
+      strike: Number(leg.strike) || 0,
+      expiry: String(leg.expiry || ""),
+      lots: Number(leg.lots) || 1,
+      status: String(leg.status || "STAGED").toUpperCase(),
+      premium: Number(leg.premium || 0),
+    }),
+  });
+}
+
+export async function updateLeg(legId, patch) {
+  return api(`/legs/${legId}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
+}
+
+export async function deleteLeg(legId) {
+  return api(`/legs/${legId}`, { method: "DELETE" });
+}
+
+/* ---------------- legacy convenience ---------------- */
+export function ensureDefault() { return null; }

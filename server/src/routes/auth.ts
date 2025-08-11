@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import prisma from "../db";
 import bcrypt from "bcryptjs";
 import { signJwt } from "../middleware/auth";
-
+import { auth } from "../middleware/auth";
 const router = Router();
 
 router.post("/register", async (req: Request, res: Response) => {
@@ -39,6 +39,18 @@ router.post("/login", async (req: Request, res: Response) => {
     token: signJwt({ id: user.id, email: user.email, name: user.name || undefined }),
     user: { id: user.id, email: user.email, name: user.name || undefined },
   });
+});
+router.get("/me", auth, async (req, res) => {
+  const u = (req as any).user || {};
+  const id = Number(u.id ?? u.sub);
+  if (!Number.isFinite(id) || id <= 0) return res.status(401).json({ error: "Unauthorized" });
+
+  const me = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, email: true, name: true, createdAt: true, updatedAt: true },
+  });
+  if (!me) return res.status(404).json({ error: "Not found" });
+  return res.json(me);
 });
 
 export default router;

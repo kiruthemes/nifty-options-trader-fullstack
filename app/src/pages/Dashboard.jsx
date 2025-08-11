@@ -1,3 +1,4 @@
+// app/src/pages/Dashboard.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import PayoffPanel from "../components/PayoffPanel.jsx";
 import PositionsList from "../components/PositionsList.jsx";
@@ -5,10 +6,10 @@ import OptionChain from "../components/OptionChain.jsx";
 import useSocket from "../hooks/useSocket.js";
 import { bsPrice } from "../utils/bs.js";
 import { DEFAULT_LOT_SIZE, DEFAULT_RF_RATE, DEFAULT_IV } from "../config.js";
-import { placeOrders } from "../utils/api.js";
+import { placeOrdersForStrategy, getProvider, fetchOptionChain } from "../utils/api.js";
 import * as StrategyStore from "../utils/strategyStore.js";
 
-console.log("%cDashboard v7 (DB strategies + legs; clean load/switch)", "color:#0ea5e9");
+console.log("%cDashboard v9 (DB currentId + auth/provider events)", "color:#0ea5e9");
 
 export default function Dashboard() {
   const { spot } = useSocket();
@@ -17,7 +18,7 @@ export default function Dashboard() {
   const [vix] = useState(12.8);
   const [prevCloseVix] = useState(12.5);
 
-  // Broadcast market summary (incl PCR from below)
+  // broadcast market summary
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("market:update", {
@@ -77,7 +78,7 @@ export default function Dashboard() {
     }
   };
 
-  // ===== Option Chain model (incl PCR broadcast) =====
+  // ===== Option Chain model =====
   const [atmBasis, setAtmBasis] = useState(() => localStorage.getItem("atm.basis") || "spot");
   useEffect(() => { localStorage.setItem("atm.basis", atmBasis); }, [atmBasis]);
 
@@ -87,6 +88,17 @@ export default function Dashboard() {
     const n = Number(src);
     return Number.isFinite(n) ? n : 24400;
   }, [atmBasis, futPrice, spot]);
+
+  // Provider (synthetic/dhan/kite)
+  const [provider, setProvider] = useState("synthetic");
+  useEffect(() => {
+    (async () => {
+      try { setProvider(await getProvider()); } catch { setProvider("synthetic"); }
+    })();
+    const onProv = (e) => setProvider(e.detail);
+    window.addEventListener("provider:change", onProv);
+    return () => window.removeEventListener("provider:change", onProv);
+  }, []);
 
   const expiries = useMemo(
     () => [
@@ -126,44 +138,40 @@ export default function Dashboard() {
   };
 
   const [chainRows, setChainRows] = useState(() => buildChain(refPrice, expiries[0].days));
-  useEffect(() => {
-    const exp = expiries.find((e) => e.code === selectedExpiry) || expiries[0];
-    setChainRows(buildChain(refPrice, exp.days));
-  }, [refPrice, selectedExpiry, spot]); // eslint-disable-line
 
-  // PCR compute + baseline + broadcast
-  const pcr = useMemo(() => {
-    if (!chainRows.length) return undefined;
-    let sumPut = 0, sumCall = 0;
-    for (const r of chainRows) {
-      sumPut += Number(r.putOi) || 0;
-      sumCall += Number(r.callOi) || 0;
-    }
-    if (sumCall <= 0) return undefined;
-    return sumPut / sumCall;
-  }, [chainRows]);
+  // Build from provider (fallback to synthetic)
+  useEffect(() => {
+    (async () => {
+      const exp = expiries.find((e) => e.code === selectedExpiry) || expiries[0];
+      const underlying = (() => {
+        try { return localStorage.getItem("ui.underlying") || "NIFTY"; } catch { return "NIFTY"; }
+      })();
 
-  const dayKey = (() => {
-    const dt = new Date();
-    const y = dt.getFullYear(), m = String(dt.getMonth() + 1).padStart(2, "0"), d = String(dt.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  })();
-  const [pcrOpen, setPcrOpen] = useState(() => {
-    try { const raw = localStorage.getItem(`pcr.open.${dayKey}`); return raw ? Number(raw) : undefined; }
-    catch { return undefined; }
-  });
-  useEffect(() => {
-    if (!Number.isFinite(pcr) || Number.isFinite(pcrOpen)) return;
-    try { localStorage.setItem(`pcr.open.${dayKey}`, String(pcr)); } catch {}
-    setPcrOpen(pcr);
-  }, [pcr, pcrOpen, dayKey]);
-  useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("market:update", {
-        detail: { spot, prevCloseNifty, vix, prevCloseVix, pcr, pcrOpen },
-      })
-    );
-  }, [spot, prevCloseNifty, vix, prevCloseVix, pcr, pcrOpen]);
+      if (provider === "synthetic") {
+        setChainRows(buildChain(refPrice, exp.days));
+        return;
+      }
+
+      try {
+        const { rows } = await fetchOptionChain(underlying, selectedExpiry);
+        if (Array.isArray(rows) && rows.length) {
+          // ensure deltas exist for Payoff/greeks consumers
+          const withDelta = rows.map((r) => {
+            const dist = (Number(r.strike) - refPrice) / STEP;
+            const deltaC = +Math.max(-1, Math.min(1, 0.5 - 0.025 * dist)).toFixed(2);
+            const deltaP = +(-1 * (1 + deltaC)).toFixed(2);
+            return { ...r, deltaC, deltaP };
+          });
+          setChainRows(withDelta);
+        } else {
+          setChainRows(buildChain(refPrice, exp.days));
+        }
+      } catch {
+        setChainRows(buildChain(refPrice, exp.days));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, refPrice, selectedExpiry, spot]);
 
   // ---------------- Strategy state & persistence ----------------
   const [strategyId, setStrategyId] = useState(null);
@@ -172,14 +180,11 @@ export default function Dashboard() {
   const [stagedLegs, setStagedLegs] = useState([]);
   const [realized, setRealized] = useState(0);
 
-  // --------- Load helper (single source of truth) ----------
+  // single source of truth loader
   const loadStrategyState = async (id) => {
-    const sid = id || StrategyStore.getCurrentId();
+    const sid = id || (await StrategyStore.getCurrentIdAsync());
     if (!sid) return;
-
-    // StrategyStore.loadStateAsync returns normalized { liveLegs, stagedLegs, realized, defaultLots, atmBasis, underlying, selectedExpiry }
     const st = await StrategyStore.loadStateAsync(sid);
-
     setStrategyId(sid);
     setLiveLegs(st?.liveLegs ?? []);
     setStagedLegs(st?.stagedLegs ?? []);
@@ -196,24 +201,20 @@ export default function Dashboard() {
     if (st?.selectedExpiry) setSelectedExpiry(st.selectedExpiry);
   };
 
-  // Initial load: pick a strategy, then load legs + prefs from DB
+  // Initial load: try user's last strategy (no errors if logged out)
   useEffect(() => {
     (async () => {
-      let id = StrategyStore.getCurrentId();
-
-      if (!id) {
-        const list = await StrategyStore.listAsync(true);
-        id = list?.[0]?.id;
+      const id = await StrategyStore.getCurrentIdAsync();
+      if (id) await loadStrategyState(id);
+      else {
+        // logged out or no strategies yet — keep UI empty
+        setStrategyId(null);
+        setLiveLegs([]); setStagedLegs([]); setRealized(0);
       }
-      if (!id) {
-        id = await StrategyStore.createAsync("My First Strategy");
-      }
-      StrategyStore.setCurrentId(id);
-      await loadStrategyState(id);
     })();
   }, []);
 
-  // Persist prefs (NOT legs; legs are persisted per action)
+  // Persist prefs (not legs)
   useEffect(() => {
     if (!strategyId) return;
     StrategyStore.saveState(strategyId, {
@@ -224,7 +225,7 @@ export default function Dashboard() {
     });
   }, [strategyId, defaultLots, atmBasis, selectedExpiry]);
 
-  // On strategy switch (Topbar fires either of these events)
+  // On strategy switch
   useEffect(() => {
     const onSelected = async (e) => { await loadStrategyState(String(e.detail)); };
     const onSwitch   = async (e) => { await loadStrategyState(String(e.detail?.id)); };
@@ -234,26 +235,83 @@ export default function Dashboard() {
       window.removeEventListener("strategy:selected", onSelected);
       window.removeEventListener("strategy:switch", onSwitch);
     };
-  }, []); // loadStrategyState defined above
+  }, []);
+
+  // React to auth events
+  useEffect(() => {
+    const onLogin = async () => {
+      // server returns the user's last-opened strategy id (or null)
+      let id = await StrategyStore.getCurrentIdAsync();
+      if (!id) {
+        // first-time user -> create one and mark selected (server does that)
+        id = await StrategyStore.createAsync("My First Strategy");
+        await StrategyStore.setCurrentIdAsync(id);
+      }
+      await loadStrategyState(id);
+    };
+    const onLogout = () => {
+      // clear UI only (no DB calls)
+      setStrategyId(null);
+      setLiveLegs([]);
+      setStagedLegs([]);
+      setRealized(0);
+    };
+    window.addEventListener("auth:login", onLogin);
+    window.addEventListener("auth:logout", onLogout);
+    return () => {
+      window.removeEventListener("auth:login", onLogin);
+      window.removeEventListener("auth:logout", onLogout);
+    };
+  }, []);
+
+  // Also respond to hard reset signals from Topbar
+  useEffect(() => {
+    const onClear = () => {
+      setStrategyId(null);
+      setLiveLegs([]);
+      setStagedLegs([]);
+      setRealized(0);
+    };
+    window.addEventListener("strategy:clear", onClear);
+    window.addEventListener("strategy:reset", onClear);
+    return () => {
+      window.removeEventListener("strategy:clear", onClear);
+      window.removeEventListener("strategy:reset", onClear);
+    };
+  }, []);
 
   // -------- staging & positions (DB-backed) --------
   const [daysToExpiry] = useState(5);
   const t = Math.max(1 / 365, daysToExpiry / 365);
 
-  // Stage a leg (persist STAGED)
+  // Stage a leg (persist STAGED, but never revert optimistic on failure)
   const stageLeg = async (side, type, strike, premium, expiry) => {
     const leg = { side, type, strike, premium, lots: defaultLots, expiry, status: "STAGED" };
-    setStagedLegs((s) => [...s, leg]); // optimistic
+
+    // optimistic UI
+    setStagedLegs((s) => [...s, leg]);
+
+    if (!strategyId) {
+      console.warn("[stageLeg] no strategyId yet; keeping leg locally", leg);
+      return;
+    }
+
     try {
       const created = await StrategyStore.createLeg(strategyId, leg);
-      setStagedLegs((prev) => {
-        const copy = [...prev];
-        const idx = copy.findIndex((x) => x === leg);
-        if (idx >= 0) copy[idx] = { ...leg, id: created?.id };
-        return copy;
-      });
-    } catch {
-      setStagedLegs((prev) => prev.filter((x) => x !== leg)); // revert on fail
+      if (created?.id) {
+        setStagedLegs((prev) => {
+          const copy = [...prev];
+          const idx = copy.findIndex((x) =>
+            x === leg ||
+            (x.side === leg.side && x.type === leg.type && x.strike === leg.strike &&
+             x.expiry === leg.expiry && x.premium === leg.premium && x.lots === leg.lots && x.status === "STAGED")
+          );
+          if (idx >= 0) copy[idx] = { ...copy[idx], id: created.id };
+          return copy;
+        });
+      }
+    } catch (e) {
+      console.warn("[stageLeg] createLeg failed; keeping local leg. Error:", e?.message || e);
     }
   };
 
@@ -292,11 +350,12 @@ export default function Dashboard() {
   const placeStagedOne = async (idx) => {
     const leg = stagedLegs[idx];
     const entry = nowPrice(leg);
-    // optimistic UI
+    // optimistic local
     setLiveLegs((l) => [...l, { ...leg, premium: entry }]);
     setStagedLegs((s) => s.filter((_, i) => i !== idx));
-    try { await placeOrders([mkOrderFromLeg(leg, "OPEN")]); } catch {}
-    // persist to DB
+    try {
+      if (strategyId) await placeOrdersForStrategy(strategyId, [mkOrderFromLeg(leg, "OPEN")]);
+    } catch {}
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "OPEN", entryPrice: entry });
   };
 
@@ -306,8 +365,12 @@ export default function Dashboard() {
     // optimistic
     setLiveLegs((l) => [...l, ...legs.map((lg) => ({ ...lg, premium: nowPrice(lg) }))]);
     setStagedLegs([]);
-    try { await placeOrders(legs.map((leg) => mkOrderFromLeg(leg, "OPEN"))); } catch {}
-    // persist all
+    try {
+      if (strategyId) {
+        await placeOrdersForStrategy(strategyId, legs.map((leg) => mkOrderFromLeg(leg, "OPEN")));
+      }
+    } catch {}
+    // persist
     for (const leg of legs) {
       if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "OPEN", entryPrice: nowPrice(leg) });
     }
@@ -333,7 +396,6 @@ export default function Dashboard() {
     const sign = leg.side === "BUY" ? 1 : -1;
     const pnl = sign * (exit - (leg.premium || 0)) * (leg.lots || 1) * DEFAULT_LOT_SIZE;
     setRealized((r) => r + pnl);
-    // persist close
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "CLOSED", exitPrice: exit });
   };
 
@@ -353,7 +415,7 @@ export default function Dashboard() {
 
   const legsForPayoff = useMemo(() => [...liveLegs, ...stagedLegs], [liveLegs, stagedLegs]);
 
-  // Container grid for OC + handle + right pane (only on XL to keep UX sane)
+  // layout
   const gridStyle = isXL
     ? { display: "grid", gridTemplateColumns: `${ocCollapsed ? 0 : ocWidth}px ${HANDLE_PX}px 1fr`, gap: `${GAP_PX}px` }
     : undefined;
@@ -383,11 +445,7 @@ export default function Dashboard() {
           className="col-resizer"
           onMouseDown={startDrag}
           onDoubleClick={handleDoubleClick}
-          title={
-            ocCollapsed
-              ? "Double-click: expand to FULL table • Drag to set width"
-              : "Double-click: collapse • Drag to adjust"
-          }
+          title={ocCollapsed ? "Double-click: expand to FULL table • Drag to set width" : "Double-click: collapse • Drag to adjust"}
         />
       )}
 

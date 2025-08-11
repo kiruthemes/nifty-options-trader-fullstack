@@ -5,8 +5,8 @@ import { DEFAULT_LOT_SIZE, DEFAULT_RF_RATE, DEFAULT_IV } from "../config.js";
 
 /**
  * Props:
- *  - liveLegs: [{ side, type, strike, premium, lots, expiry? }]
- *  - stagedLegs: [{ side, type, strike, premium, lots, expiry? }]
+ *  - liveLegs: [{ id?, side, type, strike, premium, lots, expiry? }]
+ *  - stagedLegs: [{ id?, side, type, strike, premium, lots, expiry? }]
  *  - spot, daysToExpiry, realized
  *  - defaultExpiry?: string (YYYY-MM-DD)
  *  - defaultLots?: number
@@ -41,10 +41,11 @@ export default function PositionsList({
       const type = l.type === "CE" ? "C" : "P";
       const ltpNow = bsPrice(spot, l.strike, DEFAULT_RF_RATE, DEFAULT_IV, t, type);
       const sign = isBuy(l.side) ? 1 : -1;
-      const mtm = sign * (ltpNow - l.premium) * (l.lots || 1) * DEFAULT_LOT_SIZE;
+      const mtm = sign * (ltpNow - (Number(l.premium) || 0)) * (Number(l.lots) || 1) * DEFAULT_LOT_SIZE;
       return { ...l, ltpNow, mtm };
     });
-  }, [JSON.stringify(liveLegs), spot, daysToExpiry]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveLegs, spot, daysToExpiry]);
 
   const unrealized = liveRows.reduce((a, r) => a + r.mtm, 0);
   const total = realized + unrealized;
@@ -53,16 +54,16 @@ export default function PositionsList({
   const stagedRows = useMemo(() => {
     return stagedLegs.map((l) => {
       const signCash = isBuy(l.side) ? -1 : 1; // BUY -> debit
-      const estCash = signCash * (l.premium || 0) * (l.lots || 1) * DEFAULT_LOT_SIZE;
+      const estCash = signCash * (Number(l.premium) || 0) * (Number(l.lots) || 1) * DEFAULT_LOT_SIZE;
       return { ...l, estCash };
     });
-  }, [JSON.stringify(stagedLegs)]);
+  }, [stagedLegs]);
 
   // ----- CLOSED ROWS (kept in UI) -----
   const [closedRows, setClosedRows] = useState([]); // [{leg, exitPrice, realizedPnl}]
   const addClosedRow = useCallback((leg, exitPrice) => {
     const sign = isBuy(leg.side) ? 1 : -1;
-    const realizedPnl = sign * (exitPrice - leg.premium) * (leg.lots || 1) * DEFAULT_LOT_SIZE;
+    const realizedPnl = sign * (exitPrice - (Number(leg.premium) || 0)) * (Number(leg.lots) || 1) * DEFAULT_LOT_SIZE;
     setClosedRows((prev) => [{ leg: { ...leg }, exitPrice, realizedPnl }, ...prev]);
   }, []);
 
@@ -73,7 +74,7 @@ export default function PositionsList({
       const ltpNow = bsPrice(spot, leg.strike, DEFAULT_RF_RATE, DEFAULT_IV, t, type);
       // Notional P/L vs exit (analysis only)
       const sign = isBuy(leg.side) ? 1 : -1;
-      const notionalPnl = sign * (ltpNow - exitPrice) * (leg.lots || 1) * DEFAULT_LOT_SIZE;
+      const notionalPnl = sign * (ltpNow - exitPrice) * (Number(leg.lots) || 1) * DEFAULT_LOT_SIZE;
       return { leg, exitPrice, realizedPnl, ltpNow, notionalPnl };
     });
   }, [closedRows, spot, daysToExpiry]);
@@ -112,7 +113,8 @@ export default function PositionsList({
         <div className="flex items-center justify-between mb-2">
           <div className="text-lg font-semibold">Positions</div>
           <button
-            className={`text-sm text-blue-600 ${liveLegs.length ? "opacity-100" : "opacity-50 cursor-not-allowed"}`}
+            className="text-sm text-blue-600"
+            disabled={!liveLegs.length}
             onClick={handleSquareOffAll}
             title="Square off all open positions"
           >
@@ -127,7 +129,7 @@ export default function PositionsList({
 
           {/* OPEN rows */}
           {liveRows.map((l, idx) => (
-            <div key={`live-${idx}`} className="py-2">
+            <div key={l.id ?? `live-${idx}`} className="py-2">
               <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-3">
                 <span className={`dot ${isBuy(l.side) ? "dot-buy" : "dot-sell"}`} aria-hidden />
                 <div className="min-w-0">
@@ -137,10 +139,10 @@ export default function PositionsList({
                     </div>
                     <div className="text-xs muted">{fmtExpiry(l.expiry || defaultExpiry)}</div>
                     {/* lots as a pill ONLY for open positions */}
-                    <span className="pill">{(l.lots || 1)} lots</span>
+                    <span className="pill">{(Number(l.lots) || 1)} lots</span>
                   </div>
                   <div className="text-xs muted mt-0.5">
-                    Avg: {inr(l.premium)} • LTP: {inr(l.ltpNow)}
+                    Avg: {inr(Number(l.premium) || 0)} • LTP: {inr(l.ltpNow)}
                   </div>
                 </div>
 
@@ -177,7 +179,7 @@ export default function PositionsList({
                 const realizedClass = realizedPnl >= 0 ? "text-green-600" : "text-red-600";
                 const notionalClass = notionalPnl >= 0 ? "text-green-600" : "text-red-600";
                 return (
-                  <div key={`closed-${i}`} className="py-2 opacity-60">
+                  <div key={leg.id ?? `closed-${i}`} className="py-2 opacity-60">
                     <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-3">
                       <span className={`dot ${isBuy(leg.side) ? "dot-buy" : "dot-sell"}`} aria-hidden />
                       <div className="min-w-0">
@@ -186,10 +188,10 @@ export default function PositionsList({
                             {String(leg.side).toUpperCase()} {leg.type} {leg.strike}
                           </div>
                           <div className="text-xs muted">{fmtExpiry(leg.expiry || defaultExpiry)}</div>
-                          <span className="pill">{(leg.lots || 1)} lots</span>
+                          <span className="pill">{(Number(leg.lots) || 1)} lots</span>
                         </div>
                         <div className="text-xs muted mt-0.5">
-                          Entry: {inr(leg.premium)} • Exit: {inr(exitPrice)} • LTP: {inr(ltpNow)}
+                          Entry: {inr(Number(leg.premium) || 0)} • Exit: {inr(exitPrice)} • LTP: {inr(ltpNow)}
                         </div>
                       </div>
 
@@ -245,14 +247,16 @@ export default function PositionsList({
             />
 
             <button
-              className={`btn btn-success ${stagedRows.length ? "" : "opacity-50 cursor-not-allowed"}`}
+              className="btn btn-success"
+              disabled={!stagedRows.length}
               onClick={() => stagedRows.length && onPlaceAll?.()}
               title="Place all staged orders"
             >
               Place all
             </button>
             <button
-              className={`btn btn-muted ${stagedRows.length ? "" : "opacity-50 cursor-not-allowed"}`}
+              className="btn btn-muted"
+              disabled={!stagedRows.length}
               onClick={() => stagedRows.length && onClearAll?.()}
               title="Clear all staged orders"
             >
@@ -269,7 +273,7 @@ export default function PositionsList({
           )}
 
           {stagedRows.map((l, idx) => (
-            <div key={`staged-${idx}`} className="py-2">
+            <div key={l.id ?? `staged-${idx}`} className="py-2">
               <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-3">
                 <span className={`dot ${isBuy(l.side) ? "dot-buy" : "dot-sell"}`} aria-hidden />
                 <div className="min-w-0">
@@ -287,17 +291,14 @@ export default function PositionsList({
                         min={1}
                         max={999}
                         value={Number(l.lots || 1)}
-                        onChange={(e) => {
-                          const n = Math.max(1, Math.min(999, Number(e.target.value) || 1));
-                          onUpdateStagedLots?.(idx, n);
-                        }}
+                        onChange={(e) => changeLots(idx, e.target.value)}
                         className="w-16 h-7 text-center rounded border dark:border-blue-gray-700 bg-white dark:bg-blue-gray-900"
                       />
                     </div>
                   </div>
 
                   <div className="text-xs muted mt-0.5">
-                    Price: {inr(l.premium)} • {isBuy(l.side) ? "Debit" : "Credit"}: <b>{inr(l.estCash)}</b>
+                    Price: {inr(Number(l.premium) || 0)} • {isBuy(l.side) ? "Debit" : "Credit"}: <b>{inr(l.estCash)}</b>
                   </div>
                 </div>
 
@@ -374,11 +375,11 @@ function ConfirmExitModal({ leg, ltp, mtm, onCancel, onConfirm }) {
               <b>
                 {side} {leg.type} {leg.strike}
               </b>{" "}
-              {leg.expiry ? `(${fmtExpiry(leg.expiry)})` : ""} — {leg.lots || 1} lots?
+              {leg.expiry ? `(${fmtExpiry(leg.expiry)})` : ""} — {Number(leg.lots) || 1} lots?
             </div>
 
             <div className="text-xs muted">
-              Entry: <b>{inr(leg.premium)}</b> • LTP: <b>{inr(ltp)}</b> • Est. P&L:{" "}
+              Entry: <b>{inr(Number(leg.premium) || 0)}</b> • LTP: <b>{inr(ltp)}</b> • Est. P&L:{" "}
               <b className={mtm >= 0 ? "text-green-600" : "text-red-600"}>{inr(mtm)}</b>
             </div>
 

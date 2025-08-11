@@ -86,6 +86,43 @@ function buildStateSnapshot(s: any) {
 
 /* ----------------------------- Routes ----------------------------- */
 
+// Which strategy should the UI open for this user?
+router.get("/last", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  let strat: any = null;
+
+  if (user?.lastStrategyId) {
+    strat = await prisma.strategy.findFirst({
+      where: { id: user.lastStrategyId, userId },
+    });
+  }
+  if (!strat) {
+    strat = await prisma.strategy.findFirst({
+      where: { userId, isArchived: false },
+      orderBy: { updatedAt: "desc" },
+    });
+  }
+  return res.json({ id: strat?.id ?? null });
+});
+
+// Mark a strategy as the user's current/last-opened
+router.post("/:id/select", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+
+  const exists = await prisma.strategy.findFirst({ where: { id, userId } });
+  if (!exists) return res.status(404).json({ error: "Not found" });
+
+  await prisma.user.update({ where: { id: userId }, data: { lastStrategyId: id } });
+  return res.json({ ok: true });
+});
+
 // GET /api/strategies?includeArchived=0|1
 router.get("/", async (req: Request, res: Response) => {
   const userId = getUserId(req);
@@ -132,10 +169,13 @@ router.post("/", async (req: Request, res: Response) => {
       underlying,
       atmBasis,
       selectedExpiry,
-      realized: 0, 
+      realized: 0,
     },
     select: { id: true },
   });
+
+  // make it the current one immediately
+  await prisma.user.update({ where: { id: userId }, data: { lastStrategyId: created.id } });
 
   return res.json({ id: created.id });
 });
@@ -233,5 +273,96 @@ router.delete("/:id", async (req: Request, res: Response) => {
   await prisma.strategy.delete({ where: { id } });
   return res.json({ ok: true });
 });
+// --- Strategy broker links ---
+//
+
+
+// PATCH /api/strategies/:id/brokers   { brokerAccountId:number, enabled:boolean }
+router.patch("/:id/brokers", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const id = Number(req.params.id);
+  const brokerAccountId = Number(req.body?.brokerAccountId);
+  const enabled = !!req.body?.enabled;
+
+  if (!Number.isFinite(id) || !Number.isFinite(brokerAccountId)) {
+    return res.status(400).json({ error: "Invalid ids" });
+  }
+
+  // Strategy belongs to user?
+  const strat = await prisma.strategy.findFirst({ where: { id, userId } });
+  if (!strat) return res.status(404).json({ error: "Strategy not found" });
+
+  // Broker account belongs to user?
+  const acct = await prisma.brokerAccount.findFirst({ where: { id: brokerAccountId, userId } });
+  if (!acct) return res.status(404).json({ error: "Broker account not found" });
+
+  const link = await prisma.strategyBroker.upsert({
+    where: { strategyId_brokerAccountId: { strategyId: id, brokerAccountId } },
+    update: { enabled },
+    create: { strategyId: id, brokerAccountId, enabled },
+  });
+
+  res.json({ ok: true, brokerAccountId: link.brokerAccountId, enabled: link.enabled });
+});
+// at the bottom of server/src/routes/strategies.ts (before export default)
+// --- Strategy broker links ---
+
+// GET /api/strategies/:id/brokers
+router.get("/:id/brokers", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const strategyId = Number(req.params.id);
+  if (!Number.isFinite(strategyId)) return res.status(400).json({ error: "Invalid id" });
+
+  // also verifies ownership via nested where
+  const links = await prisma.strategyBroker.findMany({
+    where: { strategyId, strategy: { userId } },
+    include: { broker: { select: { id: true, provider: true, label: true } } },
+  });
+
+  return res.json(
+    links.map((l) => ({
+      id: l.id,
+      brokerAccountId: l.brokerAccountId,
+      provider: l.broker.provider,
+      label: l.broker.label,
+      enabled: !!l.enabled,
+    })),
+  );
+});
+
+// PATCH /api/strategies/:id/brokers   { brokerAccountId:number, enabled:boolean }
+router.patch("/:id/brokers", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const id = Number(req.params.id);
+  const brokerAccountId = Number(req.body?.brokerAccountId);
+  const enabled = !!req.body?.enabled;
+
+  if (!Number.isFinite(id) || !Number.isFinite(brokerAccountId)) {
+    return res.status(400).json({ error: "Invalid ids" });
+  }
+
+  // Strategy belongs to user?
+  const strat = await prisma.strategy.findFirst({ where: { id, userId } });
+  if (!strat) return res.status(404).json({ error: "Strategy not found" });
+
+  // Broker account belongs to user?
+  const acct = await prisma.brokerAccount.findFirst({ where: { id: brokerAccountId, userId } });
+  if (!acct) return res.status(404).json({ error: "Broker account not found" });
+
+  const link = await prisma.strategyBroker.upsert({
+    where: { strategyId_brokerAccountId: { strategyId: id, brokerAccountId } },
+    update: { enabled },
+    create: { strategyId: id, brokerAccountId, enabled },
+  });
+
+  res.json({ ok: true, brokerAccountId: link.brokerAccountId, enabled: link.enabled });
+});
+
 
 export default router;

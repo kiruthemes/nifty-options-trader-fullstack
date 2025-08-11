@@ -1,17 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { bsPrice } from "../utils/bs.js";
+import { DEFAULT_IV, DEFAULT_RF_RATE, DEFAULT_LOT_SIZE } from "../config.js";
 
 /**
  * Props:
  *  - spot: number
  *  - futPrice?: number
- *  - rows: [{ strike, callLtp, putLtp, callOi, putOi, iv, deltaC, deltaP }]
+ *  - rows: [{ strike, callLtp, putLtp, callOi, putOi, iv, deltaC, deltaP }] OR provider-shaped rows
  *  - expiries: [{ code,label }] | string[]
  *  - selectedExpiry: string
  *  - onSelectExpiry: (code) => void
- *  - onAddLeg: (side, type, strike, premium) => void
+ *  - onAddLeg: (side, type, strike, premium, expiry) => void
  *  - onTableWidthChange?: (px:number) => void
- *  - atmBasis?: "spot" | "futures"                 // NEW (controlled)
- *  - onAtmBasisChange?: (basis: "spot"|"futures")  // NEW
+ *  - atmBasis?: "spot" | "futures"
+ *  - onAtmBasisChange?: (basis: "spot"|"futures")
  */
 export default function OptionChain({
   spot = 24350,
@@ -53,9 +55,7 @@ export default function OptionChain({
 
   // ----- numeric, sorted strikes -----
   const strikesSorted = useMemo(() => {
-    const arr = rows
-      .map((r) => Number(r.strike))
-      .filter((n) => Number.isFinite(n));
+    const arr = rows.map((r) => Number(r.strike)).filter((n) => Number.isFinite(n));
     arr.sort((a, b) => a - b);
     return arr;
   }, [rows]);
@@ -66,9 +66,7 @@ export default function OptionChain({
   // Robust ATM (closest strike; tie -> higher)
   const atmStrike = useMemo(() => {
     if (!strikesSorted.length) return undefined;
-    if (!Number.isFinite(refPrice)) {
-      return strikesSorted[Math.floor(strikesSorted.length / 2)];
-    }
+    if (!Number.isFinite(refPrice)) return strikesSorted[Math.floor(strikesSorted.length / 2)];
     let best = strikesSorted[0];
     let bestDiff = Math.abs(best - refPrice);
     for (let i = 1; i < strikesSorted.length; i++) {
@@ -81,16 +79,12 @@ export default function OptionChain({
     return best;
   }, [strikesSorted, refPrice]);
 
-  const refOutOfRange =
-    Number.isFinite(refPrice) &&
-    (refPrice < minStrike || refPrice > maxStrike);
-
   const callOiMax = useMemo(
-    () => Math.max(...rows.map((r) => Number(r.callOi) || 1), 1),
+    () => Math.max(...rows.map((r) => Number(r.callOi ?? r?.ce?.oi ?? r?.call?.oi) || 1), 1),
     [rows]
   );
   const putOiMax = useMemo(
-    () => Math.max(...rows.map((r) => Number(r.putOi) || 1), 1),
+    () => Math.max(...rows.map((r) => Number(r.putOi ?? r?.pe?.oi ?? r?.put?.oi) || 1), 1),
     [rows]
   );
 
@@ -102,7 +96,11 @@ export default function OptionChain({
       const snap = {};
       for (const r of rows) {
         const k = Number(r.strike);
-        if (Number.isFinite(k)) snap[k] = { callOi: Number(r.callOi) || 0, putOi: Number(r.putOi) || 0 };
+        if (Number.isFinite(k)) {
+          const co = Number(r.callOi ?? r?.ce?.oi ?? r?.call?.oi) || 0;
+          const po = Number(r.putOi ?? r?.pe?.oi ?? r?.put?.oi) || 0;
+          snap[k] = { callOi: co, putOi: po };
+        }
       }
       baselineRef.current[activeCode] = snap;
     }
@@ -126,9 +124,9 @@ export default function OptionChain({
 
       container.scrollTo({ top: container.scrollTop + delta, behavior: "smooth" });
     };
-    const raf = typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(centerATM) : null;
+    const rafId = typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(centerATM) : null;
     const t = setTimeout(centerATM, 0);
-    return () => { if (raf) cancelAnimationFrame(raf); clearTimeout(t); };
+    return () => { if (rafId) cancelAnimationFrame(rafId); clearTimeout(t); };
   }, [atmStrike, activeCode, rows.length]);
 
   // --------- Measure full table width (report to parent) ---------
@@ -139,11 +137,11 @@ export default function OptionChain({
     if (!el) return;
 
     const report = () => {
-      const w = Math.ceil(el.scrollWidth + 24); // small padding
+      const w = Math.ceil(el.scrollWidth + 24);
       onTableWidthChange(w);
     };
 
-    report(); // initial
+    report();
     let ro = null;
     if (typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(report);
@@ -159,6 +157,32 @@ export default function OptionChain({
       clearInterval(int);
     };
   }, [onTableWidthChange, rows, activeCode, atmBasis]);
+
+  // --------- Provider-agnostic accessors + fallback ---------
+  const ltpFor = (row, type /* "CE"|"PE" */) => {
+    const raw =
+      type === "CE"
+        ? (row.callLtp ?? row?.ce?.ltp ?? row?.call?.ltp)
+        : (row.putLtp ?? row?.pe?.ltp ?? row?.put?.ltp);
+    return Number(raw);
+  };
+  const oiFor = (row, type) => {
+    const raw =
+      type === "CE"
+        ? (row.callOi ?? row?.ce?.oi ?? row?.call?.oi)
+        : (row.putOi ?? row?.pe?.oi ?? row?.put?.oi);
+    return Number(raw);
+  };
+  const bsFallback = (strike, type) => {
+    const t = Math.max(1 / 365, 5 / 365); // rough
+    const underlying = Number.isFinite(spot) ? spot : (refPrice || spot || strike);
+    const optType = type === "CE" ? "C" : "P";
+    return +bsPrice(underlying, strike, DEFAULT_RF_RATE, DEFAULT_IV, t, optType).toFixed(2);
+  };
+  const premiumFor = (row, strike, type) => {
+    const ltp = ltpFor(row, type);
+    return Number.isFinite(ltp) && ltp > 0 ? ltp : bsFallback(strike, type);
+  };
 
   return (
     <aside className="card h-[calc(100vh-24px)] sticky top-3 p-0 overflow-hidden">
@@ -176,7 +200,7 @@ export default function OptionChain({
               Basis: <b>{atmBasis === "futures" ? "FUT" : "SPOT"}</b> • ₹{" "}
               {Number.isFinite(refPrice) ? refPrice.toLocaleString("en-IN") : "—"}
             </span>
-            {refOutOfRange && (
+            {Number.isFinite(refPrice) && (refPrice < minStrike || refPrice > maxStrike) && (
               <span className="px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-800 border border-amber-200">
                 Ref outside chain ({minStrike}–{maxStrike})
               </span>
@@ -244,7 +268,7 @@ export default function OptionChain({
             );
           })}
           <span className="ml-auto muted whitespace-nowrap">
-            Lot Size: <b>75</b>
+            Lot Size: <b>{DEFAULT_LOT_SIZE}</b>
           </span>
         </div>
       </div>
@@ -275,8 +299,13 @@ export default function OptionChain({
               const putITM  = Number.isFinite(refVal) && strikeN > refVal;
 
               const base = baseFor(strikeN);
-              const callDelta = (Number(r.callOi) || 0) - (Number(base.callOi) || 0);
-              const putDelta  = (Number(r.putOi)  || 0) - (Number(base.putOi)  || 0);
+              const callOiVal = oiFor(r, "CE");
+              const putOiVal  = oiFor(r, "PE");
+              const callDelta = (callOiVal || 0) - (Number(base.callOi) || 0);
+              const putDelta  = (putOiVal  || 0) - (Number(base.putOi)  || 0);
+
+              const callLtp = ltpFor(r, "CE");
+              const putLtp  = ltpFor(r, "PE");
 
               return (
                 <tr
@@ -288,9 +317,9 @@ export default function OptionChain({
                   <td className={`pl-4 relative ${callITM ? "oc-itm" : ""} ${isATM ? "atm-stripe" : ""}`}>
                     {to2(r.deltaC)}
                   </td>
-                  <td className={`font-semibold ${callITM ? "oc-itm" : ""}`}>{to2(r.callLtp)}</td>
+                  <td className={`font-semibold ${callITM ? "oc-itm" : ""}`}>{to2(callLtp)}</td>
                   <td className={`${callITM ? "oc-itm" : ""}`}>
-                    <OIBar side="call" value={Number(r.callOi)} base={Number(base.callOi)} max={callOiMax} />
+                    <OIBar side="call" value={callOiVal} base={Number(base.callOi)} max={callOiMax} />
                     <DeltaBadge v={callDelta} />
                   </td>
 
@@ -308,13 +337,13 @@ export default function OptionChain({
                       <div className="oc-actions -left-24 top-1/2 -translate-y-1/2">
                         <button
                           className="oc-pill oc-btn-left bg-green-600"
-                          onClick={() => onAddLeg?.("BUY", "CE", strikeN, Number(r.callLtp), selectedExpiry)}
+                          onClick={() => onAddLeg?.("BUY", "CE", strikeN, premiumFor(r, strikeN, "CE"), activeCode)}
                         >
                           Buy CE
                         </button>
                         <button
                           className="oc-pill oc-btn-right bg-red-600"
-                          onClick={() => onAddLeg?.("SELL", "CE", strikeN, Number(r.callLtp), selectedExpiry)}
+                          onClick={() => onAddLeg?.("SELL", "CE", strikeN, premiumFor(r, strikeN, "CE"), activeCode)}
                         >
                           Sell CE
                         </button>
@@ -324,13 +353,13 @@ export default function OptionChain({
                       <div className="oc-actions -right-24 top-1/2 -translate-y-1/2">
                         <button
                           className="oc-pill oc-btn-left bg-green-600"
-                          onClick={() => onAddLeg?.("BUY", "PE", strikeN, Number(r.putLtp), selectedExpiry)}
+                          onClick={() => onAddLeg?.("BUY", "PE", strikeN, premiumFor(r, strikeN, "PE"), activeCode)}
                         >
                           Buy PE
                         </button>
                         <button
                           className="oc-pill oc-btn-right bg-red-600"
-                          onClick={() => onAddLeg?.("SELL", "PE", strikeN, Number(r.putLtp), selectedExpiry)}
+                          onClick={() => onAddLeg?.("SELL", "PE", strikeN, premiumFor(r, strikeN, "PE"), activeCode)}
                         >
                           Sell PE
                         </button>
@@ -341,10 +370,10 @@ export default function OptionChain({
                   {/* Put side */}
                   <td className={`oc-sep ${putITM ? "oc-itm" : ""}`}>{to1(r.iv)}</td>
                   <td className={`${putITM ? "oc-itm" : ""}`}>
-                    <OIBar side="put" value={Number(r.putOi)} base={Number(base.putOi)} max={putOiMax} />
+                    <OIBar side="put" value={putOiVal} base={Number(base.putOi)} max={putOiMax} />
                     <DeltaBadge v={putDelta} />
                   </td>
-                  <td className={`font-semibold ${putITM ? "oc-itm" : ""}`}>{to2(r.putLtp)}</td>
+                  <td className={`font-semibold ${putITM ? "oc-itm" : ""}`}>{to2(putLtp)}</td>
                   <td className={`text-right pr-4 ${putITM ? "oc-itm" : ""}`}>{to2(r.deltaP)}</td>
                 </tr>
               );

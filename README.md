@@ -327,4 +327,4 @@ Send `Authorization: Bearer <token>` for protected routes.
 * True LTP/Greeks server-side; replace synthetic ticks
 * Role-based permissions for multi-user teams
 * GCP VM + domain deployment (NGINX reverse proxy)
-* PM2/systemd service scripts for production
+* PM2/systemd service scripts for production# nifty-options-trader-fullstack

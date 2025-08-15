@@ -1,0 +1,32 @@
+### Node.js
+node_modules/
+**/node_modules/
+
+### Build / output
+dist/
+build/
+
+### IDE / OS
+.vscode/
+.DS_Store
+
+### Env files
+.env
+server/.env
+
+### Server caches and data
+server/.cache/
+server/data/
+server/server/
+
+### Prisma local DB
+server/prisma/dev.db
+
+### Logs
+*.log
+
+### Scripts
+scripts/
+
+### TypeScript
+*.tsbuildinfo

@@ -181,7 +181,7 @@ export default function OptionChain({
   };
   const premiumFor = (row, strike, type) => {
     const ltp = ltpFor(row, type);
-    return Number.isFinite(ltp) && ltp > 0 ? ltp : bsFallback(strike, type);
+    return Number.isFinite(ltp) && ltp > 0 ? ltp :  NaN;
   };
 
   return (

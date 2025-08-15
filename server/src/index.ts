@@ -14,8 +14,13 @@ import brokersRouter from "./routes/brokers";
 import legsRouter from "./routes/legs";
 import providersRouter from "./routes/providers";
 import { auth } from "./middleware/auth";
-import { startSyntheticTicks } from "./ticks";
+import { startSyntheticTicks, getLatestTick } from "./ticks";
 import { wireTicks } from "./services/dataFeed";
+import { startDailyFutCloseCapture } from "./services/dataFeed";
+
+// ⬇️ ADD THESE
+import { startDailySnapshots, snapshotAllExpiries } from "./services/dataFeed";
+import { initDhanFeed, wsSubscribeChain, wsUnsubscribeChain, getLastFutPriceFromDB } from "./ws/dhanFeed";
 
 const app = express();
 
@@ -28,30 +33,52 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 // Public
 app.use("/api/auth", auth);
-app.use("/api/auth", authRouter); // if your auth router expects auth for refresh, otherwise remove previous line
-
+app.use("/api/auth", authRouter);
+app.set("etag", false);
 // Protected (or mixed) routes
 app.use("/api/strategies", auth, strategiesRouter);
 app.use("/api", auth, tradeRouter);
-app.use("/api/market", marketRouter); // public GETs inside; secure writes inside the router
-app.use("/api/brokers", brokersRouter); // each route applies `auth` internally
+app.use("/api/market", marketRouter);
+app.use("/api/brokers", brokersRouter);
 app.use("/api/legs", auth, legsRouter);
-
-// IMPORTANT: mount providers ONLY ONCE with auth
 app.use("/api/providers", auth, providersRouter);
 
 // Socket.io
 const server = http.createServer(app);
 const io = new IOServer(server, { cors: { origin: allowOrigin } });
 
+initDhanFeed(io).catch(err => {
+  console.warn("[DHAN-WS] init failed:", err?.message || err);
+});
+
 io.on("connection", (socket) => {
   console.log("client connected", socket.id);
+  // Send last available futures price (persisted from DHAN feed) to new client if available
+  try {
+    getLastFutPriceFromDB().then((futTick) => {
+      if (futTick) socket.emit("feed:fut", futTick);
+    });
+  } catch (e) {}
+  // FE will emit this when user picks an expiry
+  socket.on("oc:select", ({ symbol, expiry }) => {
+    if (!symbol || !expiry) return;
+    wsSubscribeChain(String(symbol), String(expiry));
+  });
   socket.on("disconnect", () => console.log("client disconnected", socket.id));
 });
 
 // Synthetic ticks for now (wire real later)
 startSyntheticTicks(io);
 wireTicks(io);
+
+// ⬇️ START DAILY SNAPSHOTS (15:20 IST by default) FOR NIFTY
+startDailySnapshots("NIFTY");
+startDailyFutCloseCapture("NIFTY");
+
+// ⬇️ OPTIONAL: pre-warm the store on boot when market is closed
+if (process.env.OC_PREWARM_ON_BOOT === "1") {
+  snapshotAllExpiries("NIFTY").catch(() => {});
+}
 
 const PORT = Number(process.env.PORT || 4000);
 server.listen(PORT, () => {

@@ -1,14 +1,20 @@
 // server/src/adapters/types.ts
 export type Provider = "synthetic" | "dhan" | "kite";
 
-export interface OptionChainRow {
+export type OptionChainRow = {
   strike: number;
   callLtp: number;
   putLtp: number;
   callOi: number;
   putOi: number;
-  iv: number;
-}
+  iv?: number;
+
+  // add these two lines 👇
+  deltaC?: number;
+  deltaP?: number;
+
+  expiry?: string; // YYYY-MM-DD
+};
 
 export interface MarketAdapter {
   name: Provider;

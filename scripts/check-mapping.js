@@ -1,0 +1,11 @@
+const { loadDhanInstrumentMaps } = require('../server/src/lib/dhanInstruments');
+const path = require('path');
+const csv = process.env.DHAN_INSTRUMENTS_CSV || path.resolve('server/data/dhan_instruments.csv');
+const maps = loadDhanInstrumentMaps(csv);
+console.log('bySecId=', maps.bySecId.size);
+console.log('chainIndex=', maps.chainIndex.size);
+console.log('idxSpot keys=', Array.from(maps.idxSpot.keys()));
+console.log('idxFut keys=', Array.from(maps.idxFut.entries()));
+const k = 'NIFTY|2025-08-28';
+console.log(k, 'count=', (maps.chainIndex.get(k) || []).length);
+console.log('sample keys for NIFTY=', Array.from(maps.chainIndex.keys()).filter(k=>k.startsWith('NIFTY|')).slice(0,10));

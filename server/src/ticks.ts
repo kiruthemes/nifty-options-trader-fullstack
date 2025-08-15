@@ -1,4 +1,11 @@
+
 import type { Server as IOServer } from "socket.io";
+
+let latestTick: { symbol: string; price: number; ts: number } | null = null;
+
+export function getLatestTick() {
+  return latestTick;
+}
 
 /**
  * Simple synthetic tick generator (NIFTY & VIX)
@@ -12,7 +19,8 @@ export function startSyntheticTicks(io: IOServer) {
     price = Math.max(5000, price + drift);
     const vixDrift = (Math.random() - 0.5) * 0.1;
     vix = Math.max(8, vix + vixDrift);
-    io.emit("tick", { symbol: "NIFTY", price: Number(price.toFixed(2)), ts: Date.now() });
+    latestTick = { symbol: "NIFTY", price: Number(price.toFixed(2)), ts: Date.now() };
+    io.emit("tick", latestTick);
     io.emit("vix", { symbol: "INDIAVIX", value: Number(vix.toFixed(2)), ts: Date.now() });
   }, 1000);
 }

@@ -18,24 +18,21 @@ async function j(res) {
 }
 
 // ---- provider (per-user) ----
-// GET /api/providers/current  -> { provider }
 export async function getProvider() {
   try {
-    const r = await fetch(`${API}/api/providers/current`, {
+    const r = await fetch(`${API}/api/market/provider`, {
       method: "GET",
       headers: { ...authHeaders() },
     });
     const data = await j(r);
-    return data.provider || "synthetic";
+    return data.provider || "dhan";
   } catch {
-    // fall back gracefully if not authed or endpoint fails
-    return "synthetic";
+    return "dhan";
   }
 }
 
-// PATCH /api/providers/current  { provider }
 export async function setProvider(provider) {
-  const r = await fetch(`${API}/api/providers/current`, {
+  const r = await fetch(`${API}/api/market/provider`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ provider }),
@@ -43,84 +40,80 @@ export async function setProvider(provider) {
   return j(r);
 }
 
-// ---- market data (option chain) ----
-export async function fetchOptionChain(symbol, expiry) {
-  const q = `symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}`;
-  const r = await fetch(`${API}/api/market/option-chain?${q}`, {
-    method: "GET",
-    headers: { ...authHeaders() }, // ok if unauth; server will ignore
+// ---- expiries ----
+export async function getExpiries(symbol = "NIFTY") {
+  const q = `symbol=${encodeURIComponent(symbol)}`;
+  const r = await fetch(`${API}/api/market/expiries?${q}`, {
+    headers: { ...authHeaders() },
   });
-  return j(r); // { rows: [...] }
+  return j(r); // { provider, expiries: [] }
 }
 
-// ---- trading (fanout to linked brokers) ----
+// ---- option chain ----
+export async function fetchOptionChain(symbol, expiry, opts = {}) {
+  const params = new URLSearchParams({ symbol, expiry });
+  if (opts.cached) params.set("cached", "1");
+  const r = await fetch(`${API}/api/market/option-chain?${params.toString()}`, {
+    method: "GET",
+    headers: { ...authHeaders() },
+  });
+  return j(r); // { provider, rows, lastPrice?, source }
+}
+
+// ---- trading (unchanged) ----
 export async function placeOrdersForStrategy(strategyId, orders) {
   const r = await fetch(`${API}/api/strategies/${strategyId}/place-orders`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ orders }),
   });
-  return j(r); // { results: [...] }
-}
-
-// ---- brokers (accounts owned by user) ----
-export async function listBrokerAccounts() {
-  const r = await fetch(`${API}/api/brokers`, {
-    headers: { ...authHeaders() },
-  });
   return j(r);
 }
 
+// ---- brokers (unchanged) ----
+export async function listBrokerAccounts() {
+  const r = await fetch(`${API}/api/brokers`, { headers: { ...authHeaders() } });
+  return j(r);
+}
 export async function createBrokerAccount(payload) {
   const r = await fetch(`${API}/api/brokers`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(payload || {}),
   });
-  return j(r); // { id }
+  return j(r);
 }
-
-// List linked brokers for a strategy (read)
 export async function listStrategyBrokers(strategyId) {
-  // you can also use GET /api/strategies/:id/brokers — this one matches your current UI
   const r = await fetch(`${API}/api/brokers/strategy/${strategyId}`, {
     headers: { ...authHeaders() },
   });
-  return j(r); // [{ id, brokerAccountId, provider, label, enabled }]
+  return j(r);
 }
-
-// Link/unlink brokers to a strategy (write)
 export async function linkBrokerToStrategy(strategyId, brokerAccountId) {
   const r = await fetch(`${API}/api/brokers/link`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ strategyId, brokerAccountId }),
   });
-  return j(r); // { ok: true }
+  return j(r);
 }
-
 export async function unlinkBrokerFromStrategy(strategyId, brokerAccountId) {
   const r = await fetch(`${API}/api/brokers/unlink`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ strategyId, brokerAccountId }),
   });
-  return j(r); // { ok: true }
+  return j(r);
 }
-
-// ---- strategy selection helpers (for last-opened) ----
 export async function getLastStrategyId() {
-  const r = await fetch(`${API}/api/strategies/last`, {
-    headers: { ...authHeaders() },
-  });
-  const data = await j(r); // { id: number | null }
+  const r = await fetch(`${API}/api/strategies/last`, { headers: { ...authHeaders() } });
+  const data = await j(r);
   return data?.id ?? null;
 }
-
 export async function selectStrategy(id) {
   const r = await fetch(`${API}/api/strategies/${id}/select`, {
     method: "POST",
     headers: { ...authHeaders() },
   });
-  return j(r); // { ok: true }
+  return j(r);
 }

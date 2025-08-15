@@ -149,3 +149,13 @@ model Order {
   @@index([brokerAccountId])
   @@index([provider])
 }
+
+model LastFutTick {
+  id      Int     @id @default(autoincrement())
+  symbol  String  @default("NIFTY") @unique
+  expiry  String?
+  ltp     Float
+  ts      BigInt
+  updatedAt DateTime @updatedAt
+  @@map("last_fut_tick")
+}

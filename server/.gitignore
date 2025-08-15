@@ -1,0 +1,11 @@
+# Server-specific ignores
+.env
+*.env
+node_modules/
+.DS_Store
+.cache/
+dist/
+logs/
+data/
+prisma/*.db
+prisma/*.db-journal

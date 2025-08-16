@@ -70,6 +70,22 @@ export async function placeOrdersForStrategy(strategyId, orders) {
   return j(r);
 }
 
+// ---- orders list + retry ----
+export async function listStrategyOrders(strategyId) {
+  const r = await fetch(`${API}/api/strategies/${strategyId}/orders`, {
+    headers: { ...authHeaders() },
+  });
+  return j(r); // { items: [...] }
+}
+
+export async function retryOrder(orderId) {
+  const r = await fetch(`${API}/api/orders/${orderId}/retry`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+  });
+  return j(r);
+}
+
 // ---- brokers (unchanged) ----
 export async function listBrokerAccounts() {
   const r = await fetch(`${API}/api/brokers`, { headers: { ...authHeaders() } });

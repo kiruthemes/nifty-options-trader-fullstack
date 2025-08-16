@@ -2,7 +2,7 @@
 import { Router, Request, Response } from "express";
 import { auth } from "../middleware/auth";
 import prisma from "../db";
-import { placeOrdersForStrategy } from "../services/brokerExec";
+import { placeOrdersForStrategy, placeOrdersForBroker } from "../services/brokerExec";
 
 const router = Router();
 
@@ -182,7 +182,7 @@ router.post("/orders/:id/retry", auth, async (req: Request, res: Response) => {
     try { orderObj = JSON.parse(row.requestJson || "{}"); } catch {}
     if (!orderObj || !orderObj.symbol) return res.status(400).json({ error: "Original order payload missing" });
 
-    const results = await placeOrdersForStrategy(row.strategyId, [orderObj]);
+  const results = await placeOrdersForBroker(row.strategyId, row.brokerAccountId, [orderObj]);
     return res.json({ ok: true, results });
   } catch (e: any) {
     const code = Number(e?.status) || 500;

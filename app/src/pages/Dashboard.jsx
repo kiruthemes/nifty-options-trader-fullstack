@@ -1,7 +1,7 @@
 // app/src/pages/Dashboard.jsx
 import React, { useEffect, useRef, useState } from "react";
 import PayoffPanel from "../components/PayoffPanel.jsx";
-import PositionsList from "../components/PositionsList.jsx";
+import PositionsList, { ExecutedOrders } from "../components/PositionsList.jsx";
 import OptionChain from "../components/OptionChain.jsx";
 import useSocket from "../hooks/useSocket.js";
 import { bsPrice } from "../utils/bs.js";
@@ -306,11 +306,11 @@ export default function Dashboard() {
     symbol: underlying,
     exchange: "NFO",
     product: "NRML",
-    order_type: "MARKET",
+    order_type: String(leg.order_type || "MARKET").toUpperCase(),
     side: leg.side,
     option_type: leg.type,
     strike: leg.strike,
-    price: nowPrice(leg),
+    price: String(leg.order_type || "MARKET").toUpperCase() === "LIMIT" ? Number(leg.limit_price || nowPrice(leg)) : nowPrice(leg),
     lots: leg.lots || 1,
     lot_size: DEFAULT_LOT_SIZE,
     expiry: leg.expiry,
@@ -354,7 +354,7 @@ export default function Dashboard() {
     const entry = nowPrice(leg);
     setLiveLegs((l) => [...l, { ...leg, premium: entry }]);
     setStagedLegs((s) => s.filter((_, i) => i !== idx));
-    try { if (strategyId) await placeOrdersForStrategy(strategyId, [mkOrderFromLeg(leg, "OPEN")]); } catch {}
+  try { if (strategyId) await placeOrdersForStrategy(strategyId, [mkOrderFromLeg(leg, "OPEN")]); } catch {}
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "OPEN", entryPrice: entry });
   };
 
@@ -363,7 +363,7 @@ export default function Dashboard() {
     const legs = [...stagedLegs];
     setLiveLegs((l) => [...l, ...legs.map((lg) => ({ ...lg, premium: nowPrice(lg) }))]);
     setStagedLegs([]);
-    try { if (strategyId) await placeOrdersForStrategy(strategyId, legs.map((leg) => mkOrderFromLeg(leg, "OPEN"))); } catch {}
+  try { if (strategyId) await placeOrdersForStrategy(strategyId, legs.map((leg) => mkOrderFromLeg(leg, "OPEN"))); } catch {}
     for (const leg of legs) { if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "OPEN", entryPrice: nowPrice(leg) }); }
   };
 
@@ -479,6 +479,7 @@ export default function Dashboard() {
               onChangeDefaultLots={setDefaultLots}
               onUpdateStagedLots={updateStagedLots}
               defaultExpiry={selectedExpiry || undefined}
+              strategyId={strategyId}
             />
           </div>
         </div>

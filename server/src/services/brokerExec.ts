@@ -2,6 +2,8 @@
 import prisma from "../db";
 import { getBrokerSecrets, redact } from "../utils/vault";
 import fetch from "node-fetch";
+import path from "path";
+import { loadDhanInstrumentMaps } from "../lib/dhanInstruments";
 
 /**
  * Normalized order shape (what your UI already sends to /trade or similar)
@@ -59,13 +61,29 @@ const dhanAdapter: BrokerAdapter = {
     const side = order.side === "BUY" ? "BUY" : "SELL";
     const orderType = order.order_type === "LIMIT" ? "LIMIT" : "MARKET";
     const productType = (process.env.DHAN_PRODUCT_TYPE || order.product || "CNC").toUpperCase();
-    // Dhan expects securityId; we support symbol/strike/expiry via server-side mapping ideally.
-    // For MVP, rely on option tradingSymbol if provided via secrets.meta or order.action payload; otherwise send error.
+
+    // Resolve Dhan securityId using CSV if not in broker meta
     const meta = secrets.meta || {};
-    const securityId = meta.securityId || meta.secId;
+    let securityId: string | undefined = meta.securityId || meta.secId;
     if (!securityId) {
-      throw new Error("Dhan securityId missing for order. Attach via BrokerAccount.metaJson");
+      const csvPath = process.env.DHAN_INSTRUMENTS_CSV || path.resolve(process.cwd(), "data/dhan_instruments.csv");
+      try {
+        const maps = loadDhanInstrumentMaps(csvPath);
+        const key = `${String(order.symbol || "NIFTY").toUpperCase()}|${order.expiry}`;
+        const list = maps.chainIndex.get(key) || [];
+        for (const sid of list) {
+          const m = maps.bySecId.get(sid);
+          if (!m) continue;
+          if (m.strike === Number(order.strike) && m.optType === order.option_type) {
+            securityId = sid;
+            break;
+          }
+        }
+      } catch (e) {
+        // fallthrough to error below
+      }
     }
+    if (!securityId) throw new Error("Dhan securityId could not be resolved for option (symbol/expiry/strike/type)");
 
     const body: any = {
       transactionType: side, // BUY/SELL
@@ -212,4 +230,59 @@ export async function placeOrdersForStrategy(
   }
 
   return results;
+}
+
+/** Place orders for a single broker account (used for retry a specific failed order). */
+export async function placeOrdersForBroker(
+  strategyId: number,
+  brokerAccountId: number,
+  orders: NormalizedOrder[],
+) {
+  if (!strategyId) throw new Error("strategyId is required");
+  if (!brokerAccountId) throw new Error("brokerAccountId is required");
+  if (!Array.isArray(orders) || orders.length === 0) return [];
+
+  const acct = await prisma.brokerAccount.findFirst({ where: { id: brokerAccountId } });
+  if (!acct) throw new Error("Broker account not found");
+  const provider = acct.provider.toLowerCase();
+  const adapter = getAdapter(provider);
+  const secrets = getBrokerSecrets(acct);
+
+  const perOrder: Array<{ ok: boolean; orderId?: number; providerOrderId?: string; error?: string }> = [];
+  for (const ord of orders) {
+    const orderRow = await prisma.order.create({
+      data: {
+        strategyId,
+        legId: null,
+        brokerAccountId: acct.id,
+        provider,
+        status: "PENDING",
+        requestJson: JSON.stringify(ord),
+        responseJson: "{}",
+      },
+    });
+    try {
+      const resp = await adapter.send(ord, secrets);
+      await prisma.order.update({
+        where: { id: orderRow.id },
+        data: {
+          providerOrderId: resp.providerOrderId || null,
+          status: SIMULATE ? "FILLED" : "OPEN",
+          responseJson: JSON.stringify(resp.raw || {}),
+        },
+      });
+      perOrder.push({ ok: true, orderId: orderRow.id, providerOrderId: resp.providerOrderId });
+    } catch (err: any) {
+      await prisma.order.update({
+        where: { id: orderRow.id },
+        data: {
+          status: "REJECTED",
+          responseJson: JSON.stringify({ error: String(err?.message || err) }),
+        },
+      });
+      perOrder.push({ ok: false, orderId: orderRow.id, error: String(err?.message || err) });
+    }
+  }
+
+  return [{ brokerAccountId: acct.id, provider, perOrder }];
 }

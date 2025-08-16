@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useState, useCallback, useEffect } from "react";
 import { inr } from "../utils/format.js";
 import { bsPrice } from "../utils/bs.js";
 import { DEFAULT_LOT_SIZE, DEFAULT_RF_RATE, DEFAULT_IV } from "../config.js";
+import { listStrategyOrders, retryOrder } from "../utils/api.js";
 
 /**
  * Props:
@@ -31,7 +32,32 @@ export default function PositionsList({
   onRemoveOne,
   onPlaceAll,
   onClearAll,
+  strategyId,
 }) {
+  // Executed orders view (inline tab switcher within same card)
+  const [view, setView] = useState("positions"); // "positions" | "executed"
+  const [orders, setOrders] = useState([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [ordersErr, setOrdersErr] = useState("");
+  const refreshOrders = async () => {
+    if (!strategyId) return;
+    setLoadingOrders(true); setOrdersErr("");
+    try {
+      const r = await listStrategyOrders(strategyId);
+      setOrders(Array.isArray(r?.items) ? r.items : []);
+    } catch (e) {
+      setOrdersErr(e?.message || String(e));
+      setOrders([]);
+    } finally {
+      setLoadingOrders(false);
+    }
+  };
+  useEffect(() => { if (view === "executed") refreshOrders(); }, [view, strategyId]);
+
+  const onRetry = async (id) => {
+    try { await retryOrder(id); await refreshOrders(); } catch (e) { alert(e?.message || String(e)); }
+  };
+
   const t = Math.max(1 / 365, daysToExpiry / 365);
   const isBuy = (side) => String(side || "").toUpperCase() === "BUY";
 
@@ -294,6 +320,28 @@ export default function PositionsList({
                         onChange={(e) => changeLots(idx, e.target.value)}
                         className="w-16 h-7 text-center rounded border dark:border-blue-gray-700 bg-white dark:bg-blue-gray-900"
                       />
+                      {/* Order type selector */}
+                      <span className="muted ml-2">Type</span>
+                      <select
+                        value={l.order_type || "MARKET"}
+                        onChange={(e) => onUpdateStagedLots?.(idx, Number(l.lots || 1)) || (stagedLegs[idx] && (stagedLegs[idx].order_type = e.target.value))}
+                        className="h-7 px-2 rounded border dark:border-blue-gray-700 bg-white dark:bg-blue-gray-900"
+                      >
+                        <option value="MARKET">Market</option>
+                        <option value="LIMIT">Limit</option>
+                      </select>
+                      {String(l.order_type || "MARKET").toUpperCase() === "LIMIT" && (
+                        <>
+                          <span className="muted ml-2">Price</span>
+                          <input
+                            type="number"
+                            step="0.05"
+                            value={Number(l.limit_price || l.premium || 0)}
+                            onChange={(e) => (stagedLegs[idx] && (stagedLegs[idx].limit_price = Number(e.target.value) || 0))}
+                            className="w-24 h-7 text-right rounded border dark:border-blue-gray-700 bg-white dark:bg-blue-gray-900"
+                          />
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -336,6 +384,41 @@ export default function PositionsList({
           }}
         />
       )}
+    </div>
+  );
+}
+
+/* Executed Orders mini-view inside Positions card */
+export function ExecutedOrders({ items = [], loading, error, onRetry }) {
+  return (
+    <div className="divide-y dark:divide-blue-gray-800">
+      {loading && <div className="muted py-4">Loading…</div>}
+      {error && <div className="text-red-600 py-2 text-sm">{String(error)}</div>}
+      {!loading && !error && items.length === 0 && (
+        <div className="muted py-6">No orders yet.</div>
+      )}
+      {items.map((o) => {
+        let req = {}; try { req = JSON.parse(o.requestJson || "{}"); } catch {}
+        let resp = {}; try { resp = JSON.parse(o.responseJson || "{}"); } catch {}
+        const statusCls = o.status === "REJECTED" ? "text-red-600" : o.status === "FILLED" ? "text-green-600" : "";
+        return (
+          <div key={o.id} className="py-2 text-sm grid grid-cols-[1fr_auto] items-center gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="font-medium truncate">{String(req.side || "").toUpperCase()} {req.option_type} {req.strike} ({req.expiry})</div>
+                <span className="pill">{o.provider.toUpperCase()}</span>
+                <span className={`pill ${statusCls}`}>{o.status}</span>
+              </div>
+              <div className="text-xs muted mt-0.5 truncate">OID: {o.providerOrderId || "—"} • {new Date(o.createdAt).toLocaleString()}</div>
+            </div>
+            <div className="flex justify-end gap-2">
+              {o.status === "REJECTED" && (
+                <button className="btn btn-primary" onClick={() => onRetry?.(o.id)}>Retry</button>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

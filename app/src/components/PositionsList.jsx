@@ -55,6 +55,18 @@ export default function PositionsList({
     }
   };
   useEffect(() => { if (view === "executed") refreshOrders(); }, [view, strategyId]);
+  // Auto-refresh while on Executed view
+  useEffect(() => {
+    if (view !== "executed") return;
+    const id = setInterval(() => { refreshOrders().catch(() => {}); }, 10000);
+    return () => clearInterval(id);
+  }, [view, strategyId]);
+  // Refresh when orders are placed elsewhere (Dashboard dispatches event)
+  useEffect(() => {
+    const onUpd = () => { if (view === "executed") refreshOrders(); };
+    window.addEventListener("orders:updated", onUpd);
+    return () => window.removeEventListener("orders:updated", onUpd);
+  }, [view, strategyId]);
 
   const onRetry = async (id) => {
     try { await retryOrder(id); await refreshOrders(); } catch (e) { alert(e?.message || String(e)); }
@@ -136,6 +148,36 @@ export default function PositionsList({
 
   return (
     <div className="flex flex-col gap-6">
+      {/* header toggle */}
+      <div className="flex items-center justify-between">
+        <div className="inline-flex items-center rounded-lg border dark:border-blue-gray-800 overflow-hidden">
+          <button
+            className={`px-3 py-1.5 text-sm ${view === "positions" ? "bg-blue-600 text-white" : "bg-transparent"}`}
+            onClick={() => setView("positions")}
+          >
+            Positions
+          </button>
+          <button
+            className={`px-3 py-1.5 text-sm ${view === "executed" ? "bg-blue-600 text-white" : "bg-transparent"}`}
+            onClick={() => setView("executed")}
+          >
+            Executed
+          </button>
+        </div>
+        {view === "executed" && (
+          <div className="flex items-center gap-2">
+            <button className="btn btn-muted" onClick={refreshOrders} disabled={loadingOrders}>Refresh</button>
+          </div>
+        )}
+      </div>
+
+      {view === "executed" ? (
+        <div className="card p-3">
+          <div className="text-lg font-semibold mb-2">Executed Orders</div>
+          <ExecutedOrders items={orders} loading={loadingOrders} error={ordersErr} onRetry={onRetry} />
+        </div>
+      ) : (
+        <>
       {/* OPEN + CLOSED (same card) */}
       <div className="card p-3">
         <div className="flex items-center justify-between mb-2">
@@ -143,7 +185,12 @@ export default function PositionsList({
           <button
             className="text-sm text-blue-600"
             disabled={!liveLegs.length}
-            onClick={handleSquareOffAll}
+            onClick={() => {
+              if (!liveLegs.length) return;
+              const ok = window.confirm("Square-off ALL open positions now?");
+              if (!ok) return;
+              handleSquareOffAll();
+            }}
             title="Square off all open positions"
           >
             Square off all →
@@ -277,7 +324,12 @@ export default function PositionsList({
             <button
               className="btn btn-success"
               disabled={!stagedRows.length}
-              onClick={() => stagedRows.length && onPlaceAll?.()}
+              onClick={() => {
+                if (!stagedRows.length) return;
+                const ok = window.confirm("Place ALL staged orders across linked brokers?");
+                if (!ok) return;
+                onPlaceAll?.();
+              }}
               title="Place all staged orders"
             >
               Place all
@@ -372,6 +424,8 @@ export default function PositionsList({
           </div>
         )}
       </div>
+        </>
+      )}
 
       {/* Confirm Exit Modal */}
       {exitIdx != null && modalRow && (

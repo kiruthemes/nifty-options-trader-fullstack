@@ -370,8 +370,9 @@ export default function Dashboard() {
     const entry = nowPrice(leg);
     setLiveLegs((l) => [...l, { ...leg, premium: entry }]);
     setStagedLegs((s) => s.filter((_, i) => i !== idx));
-  try { if (strategyId) await placeOrdersForStrategy(strategyId, [mkOrderFromLeg(leg, "OPEN")]); } catch {}
+    try { if (strategyId) await placeOrdersForStrategy(strategyId, [mkOrderFromLeg(leg, "OPEN")]); } catch {}
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "OPEN", entryPrice: entry });
+    try { window.dispatchEvent(new CustomEvent("orders:updated")); } catch {}
   };
 
   const placeStagedAll = async () => {
@@ -379,20 +380,9 @@ export default function Dashboard() {
     const legs = [...stagedLegs];
     setLiveLegs((l) => [...l, ...legs.map((lg) => ({ ...lg, premium: nowPrice(lg) }))]);
     setStagedLegs([]);
-  try { if (strategyId) await placeOrdersForStrategy(strategyId, legs.map((leg) => mkOrderFromLeg(leg, "OPEN"))); } catch {}
+    try { if (strategyId) await placeOrdersForStrategy(strategyId, legs.map((leg) => mkOrderFromLeg(leg, "OPEN"))); } catch {}
     for (const leg of legs) { if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "OPEN", entryPrice: nowPrice(leg) }); }
-  };
-
-  const removeStagedOne = async (idx) => {
-    const leg = stagedLegs[idx];
-    setStagedLegs((prev) => prev.filter((_, i) => i !== idx));
-    if (leg?.id) await StrategyStore.deleteLeg(leg.id);
-  };
-
-  const clearStagedAll = async () => {
-    const ids = stagedLegs.map((l) => l.id).filter(Boolean);
-    setStagedLegs([]);
-    for (const id of ids) await StrategyStore.deleteLeg(id);
+    try { window.dispatchEvent(new CustomEvent("orders:updated")); } catch {}
   };
 
   const squareOffIndex = async (idx) => {
@@ -410,6 +400,7 @@ export default function Dashboard() {
       }
     } catch {}
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "CLOSED", exitPrice: exit });
+    try { window.dispatchEvent(new CustomEvent("orders:updated")); } catch {}
   };
 
   const squareOffAll = async () => {
@@ -431,6 +422,7 @@ export default function Dashboard() {
       if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "CLOSED", exitPrice: exit });
     }
     setRealized((r) => r + sum);
+    try { window.dispatchEvent(new CustomEvent("orders:updated")); } catch {}
   };
 
   const legsForPayoff = [...liveLegs, ...stagedLegs];

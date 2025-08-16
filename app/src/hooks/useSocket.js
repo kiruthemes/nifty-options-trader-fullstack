@@ -85,7 +85,19 @@ export default function useSocket(opts = {}) {
     // Spot index ticks
     s.on("feed:spot", (t) => {
       const v = Number(t?.ltp);
-      if (Number.isFinite(v)) setSpot(v);
+      const sym = String(t?.symbol || "").toUpperCase();
+      const want = String(symbol || "NIFTY").toUpperCase();
+      // Only treat the currently selected underlying as SPOT for pricing/UI
+      if (Number.isFinite(v) && sym === want) setSpot(v);
+      try {
+        if (sym === "NIFTY") {
+          window.dispatchEvent(new CustomEvent("market:update", { detail: { spot: v } }));
+        } else if (sym === "INDIAVIX") {
+          window.dispatchEvent(new CustomEvent("market:update", { detail: { vix: v } }));
+        } else if (sym === "BANKNIFTY") {
+          window.dispatchEvent(new CustomEvent("market:update", { detail: { bank: v } }));
+        }
+      } catch {}
     });
 
     // Futures ticks (explicit event from server)
@@ -126,6 +138,13 @@ export default function useSocket(opts = {}) {
       next.set(k, oi);
       oiRef.current = next;
       bumpNow();
+    });
+
+    // Server-computed market summary updates (PCR, prevClose, etc.)
+    s.on("market:update", (d) => {
+      try {
+        window.dispatchEvent(new CustomEvent("market:update", { detail: d || {} }));
+      } catch {}
     });
 
     return () => {

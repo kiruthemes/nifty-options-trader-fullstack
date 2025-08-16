@@ -93,6 +93,8 @@ export default function Dashboard() {
   const [baseRows, setBaseRows] = useState([]);
   const [spotApi, setSpotApi] = useState(undefined);
   const [futApi, setFutApi] = useState(undefined);
+  const [pcr, setPcr] = useState(undefined);
+  const [pcrOpen, setPcrOpen] = useState(undefined);
   useEffect(() => {
     if (!selectedExpiry) return;
     let cancelled = false;
@@ -105,11 +107,12 @@ export default function Dashboard() {
         const rows = Array.isArray(snap?.rows) ? snap.rows : [];
         setBaseRows(rows);
 
-        // index last price (spot)
+  // index last price (spot)
         if (Number.isFinite(Number(snap?.lastPrice))) setSpotApi(Number(snap.lastPrice));
         // optional futures close if attached by server
         if (Number.isFinite(Number(snap?.futClose))) setFutApi(Number(snap.futClose));
         else setFutApi(undefined);
+  // PCR (if backend provided via hydration elsewhere, keep it in a small poll or event)
       } catch (e) {
         if (!cancelled) setBaseRows([]);
         console.warn("[OC] fetchOptionChain failed", e?.message || e);
@@ -129,6 +132,17 @@ export default function Dashboard() {
 
   const uiSpot = Number.isFinite(spotWs) ? spotWs : (Number.isFinite(spotApi) ? spotApi : undefined);
   const uiFut  = Number.isFinite(futWs)  ? futWs  : (Number.isFinite(futApi)  ? futApi  : undefined);
+  
+  // Listen to market:update to capture PCR (computed from WS or fallback from OC)
+  useEffect(() => {
+    const onMarket = (e) => {
+      const d = e.detail || {};
+      if (Number.isFinite(Number(d.pcr))) setPcr(Number(d.pcr));
+      if (Number.isFinite(Number(d.pcrOpen))) setPcrOpen(Number(d.pcrOpen));
+    };
+    window.addEventListener("market:update", onMarket);
+    return () => window.removeEventListener("market:update", onMarket);
+  }, []);
 
   // Merge REST rows with WS ticks (compute fresh each render)
   const mergedRows = (() => {
@@ -443,6 +457,8 @@ export default function Dashboard() {
                 SPOT <span className="font-semibold">{Number(uiSpot ?? 0).toFixed(2)}</span>
                 {' | '}
                 FUT <span className="font-semibold">{Number(uiFut ?? 0).toFixed(2)}</span>
+                {' | '}
+                PCR <span className="font-semibold">{Number.isFinite(Number(pcr)) ? Number(pcr).toFixed(2) : '—'}</span>
               </div>
             </div>
           </div>

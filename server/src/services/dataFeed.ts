@@ -31,8 +31,8 @@ const providers: Record<Provider, MarketAdapter> = {
 };
 
 const state: State = {
-  provider: (process.env.DATA_SOURCE as Provider) || "synthetic",
-  adapter: providers[(process.env.DATA_SOURCE as Provider) || "synthetic"],
+  provider: ((process.env.DATA_SOURCE as Provider) || "dhan") as Provider,
+  adapter: providers[((process.env.DATA_SOURCE as Provider) || "dhan") as Provider],
 };
 
 const DBG = process.env.DEBUG_DATAFEED === "1";

@@ -225,6 +225,8 @@ function buildMapping(csvFile: string) {
     if (isIndex) {
       if (symbol === "NIFTY") idxSpot.set("NIFTY", secId);
       if (symbol === "BANKNIFTY") idxSpot.set("BANKNIFTY", secId);
+      // Also map VIX if present in CSV
+      if (symbol === "INDIAVIX" || symbol?.includes?.("VIX")) idxSpot.set("INDIAVIX", secId);
     }
 
     if (isOpt && expiry && typeof strike === "number" && optType) {
@@ -246,6 +248,36 @@ function buildMapping(csvFile: string) {
       }
     }
   }
+
+  // Environment overrides to ensure critical mappings exist even if CSV lacks NSE index rows
+  try {
+    const envNifty = (process.env.DHAN_NIFTY_SID || "").trim();
+    const envBank  = (process.env.DHAN_BANKNIFTY_SID || "").trim();
+    const envVix   = (process.env.DHAN_INDIAVIX_SID || process.env.DHAN_VIX_SID || "").trim();
+    const envNiftyFut = (process.env.DHAN_NIFTY_FUT_SID || "").trim();
+    const envBankFut  = (process.env.DHAN_BANKNIFTY_FUT_SID || "").trim();
+
+    if (envNifty) {
+      idxSpot.set("NIFTY", envNifty);
+      if (!bySecId.has(envNifty)) bySecId.set(envNifty, { secId: envNifty, exch: "NSE_INDEX", symbol: "NIFTY", isIndex: true });
+    }
+    if (envBank) {
+      idxSpot.set("BANKNIFTY", envBank);
+      if (!bySecId.has(envBank)) bySecId.set(envBank, { secId: envBank, exch: "NSE_INDEX", symbol: "BANKNIFTY", isIndex: true });
+    }
+    if (envVix) {
+      idxSpot.set("INDIAVIX", envVix);
+      if (!bySecId.has(envVix)) bySecId.set(envVix, { secId: envVix, exch: "NSE_INDEX", symbol: "INDIAVIX", isIndex: true });
+    }
+    if (envNiftyFut) {
+      idxFut.set("NIFTY", envNiftyFut);
+      if (!bySecId.has(envNiftyFut)) bySecId.set(envNiftyFut, { secId: envNiftyFut, exch: "NSE_FNO", symbol: "NIFTY", isFut: true });
+    }
+    if (envBankFut) {
+      idxFut.set("BANKNIFTY", envBankFut);
+      if (!bySecId.has(envBankFut)) bySecId.set(envBankFut, { secId: envBankFut, exch: "NSE_FNO", symbol: "BANKNIFTY", isFut: true });
+    }
+  } catch {}
 
   if (DBG) {
     console.log(
@@ -348,6 +380,11 @@ export class DhanFeed {
   private subbed = new Set<SubKey>();
   private batchTimer?: NodeJS.Timeout;
 
+  // Track OI per expiry to compute PCR in realtime
+  private oiByExpiry: Map<string, { ce: Map<number, number>; pe: Map<number, number> } > = new Map();
+  // Track first computed PCR of the session as an "open" baseline per symbol|expiry
+  private pcrOpenByExpiry: Map<string, number> = new Map();
+
   constructor(io?: Server) {
     this.io = io;
   }
@@ -358,6 +395,11 @@ export class DhanFeed {
     this.chainIndex = maps.chainIndex;
     this.idxSpot = maps.idxSpot;
     this.idxFut = maps.idxFut;
+    if (DBG) {
+      console.log(
+        `[DHAN-WS][INDEX] idxSpot mappings => NIFTY=${this.idxSpot.get("NIFTY") || "-"}, INDIAVIX=${this.idxSpot.get("INDIAVIX") || "-"}`
+      );
+    }
 
     // log current persisted last fut tick for debugging
     if (DBG || process.env.DEBUG_DHAN_WS === "1") {
@@ -366,7 +408,7 @@ export class DhanFeed {
       }).catch(() => {});
     }
 
-    if (!WS_ENABLE) {
+  if (!WS_ENABLE) {
       console.warn("[DHAN-WS] DHAN_WS_ENABLE != 1 — WebSocket feed disabled");
       return;
     }
@@ -377,6 +419,19 @@ export class DhanFeed {
       return;
     }
     await this.connectLoop();
+    // After connecting, proactively subscribe to NIFTY and INDIAVIX index if available
+  const spotIds: string[] = [];
+  for (const base of ["NIFTY", "BANKNIFTY", "INDIAVIX"]) {
+      const id = this.idxSpot.get(base);
+      if (id) {
+        this.wantSubs.add(subKey("NSE_INDEX", id));
+        spotIds.push(id);
+    if (DBG) console.log(`[DHAN-WS][INDEX] will subscribe ${base} NSE_INDEX secId=${id}`);
+      } else if (DBG) {
+        console.warn(`[DHAN-WS][INDEX] missing idxSpot secId for ${base}`);
+      }
+    }
+    if (spotIds.length) this.scheduleBatch(50);
   }
 
   subscribeChain(symbol: string, expiry: string) {
@@ -396,6 +451,9 @@ export class DhanFeed {
     if (spotId) this.wantSubs.add(subKey("NSE_INDEX", spotId));
     const futId = this.idxFut.get(sym);
     if (futId) this.wantSubs.add(subKey("NSE_FNO", futId));
+  // Always subscribe to India VIX index if available
+  const vixId = this.idxSpot.get("INDIAVIX");
+  if (vixId) this.wantSubs.add(subKey("NSE_INDEX", vixId));
 
     if (DBG)
       console.log(
@@ -411,6 +469,9 @@ export class DhanFeed {
         .slice(0, 8);
       console.log(`[DHAN-WS][DEBUG] key=${key} strikes=${size} sampleKeys=`, avail);
     }
+  // Ensure we have an OI bucket for PCR
+  const kPCR = `${sym}|${expiry}`;
+  if (!this.oiByExpiry.has(kPCR)) this.oiByExpiry.set(kPCR, { ce: new Map(), pe: new Map() });
     this.scheduleBatch();
   }
 
@@ -621,7 +682,27 @@ export class DhanFeed {
     if (!this.io) return;
 
     if (meta.isIndex) {
-      this.io.emit("feed:spot", { provider: "dhan", symbol: meta.symbol || "NIFTY", ltp, ts });
+      const sym = (meta.symbol || "NIFTY").toUpperCase();
+      if (DBG) console.log(`[DHAN-WS][INDEX] LTP ${sym} secId=${secId || "?"} ltp=${ltp}`);
+      this.io.emit("feed:spot", { provider: "dhan", symbol: sym, ltp, ts });
+      // persist last index ticks (NIFTY / INDIAVIX)
+      try {
+        (prisma as any).lastIndexTick
+          .upsert({
+            where: { symbol: sym },
+            update: { ltp, ts: ts as any },
+            create: { symbol: sym, ltp, ts: ts as any },
+          })
+          .catch(() => {});
+      } catch {}
+      // also broadcast a unified market:update for Topbar convenience
+      if (sym === "INDIAVIX") {
+        this.io.emit("market:update", { vix: ltp });
+      } else if (sym === "NIFTY") {
+        this.io.emit("market:update", { spot: ltp });
+      } else if (sym === "BANKNIFTY") {
+        this.io.emit("market:update", { bank: ltp });
+      }
       return;
     }
     if (meta.isFut) {
@@ -683,6 +764,48 @@ export class DhanFeed {
       ts,
     };
     this.io.emit("oc:oi", payload);
+
+    // Update PCR store and emit market:update when we have both sides
+    const sym = String(meta.symbol || "NIFTY").toUpperCase();
+    const exp = String(meta.expiry || "");
+    if (!exp) return;
+    const bucketKey = `${sym}|${exp}`;
+    const b = this.oiByExpiry.get(bucketKey) || { ce: new Map(), pe: new Map() };
+    if (meta.optType === "CE") b.ce.set(Number(meta.strike), oi);
+    else if (meta.optType === "PE") b.pe.set(Number(meta.strike), oi);
+    this.oiByExpiry.set(bucketKey, b);
+    // Compute sums (could be optimized by incrementally adjusting)
+    let sumCE = 0, sumPE = 0;
+    for (const v of b.ce.values()) sumCE += Number(v) || 0;
+    for (const v of b.pe.values()) sumPE += Number(v) || 0;
+    if (sumCE > 0) {
+      const pcr = sumPE / sumCE;
+  const key = `${sym}|${exp}`;
+  if (!this.pcrOpenByExpiry.has(key)) this.pcrOpenByExpiry.set(key, pcr);
+      this.io.emit("market:update", { pcr });
+    }
+  }
+
+  // expose current PCR for a given (symbol, expiry)
+  public getPCR(symbol: string, expiry: string): number | undefined {
+    const sym = String(symbol || "NIFTY").toUpperCase();
+    const exp = String(expiry || "");
+    if (!exp) return undefined;
+    const b = this.oiByExpiry.get(`${sym}|${exp}`);
+    if (!b) return undefined;
+    let sumCE = 0, sumPE = 0;
+    for (const v of b.ce.values()) sumCE += Number(v) || 0;
+    for (const v of b.pe.values()) sumPE += Number(v) || 0;
+    if (sumCE <= 0) return undefined;
+    return sumPE / sumCE;
+  }
+
+  // expose PCR open (first computed of session) if available
+  public getPCROpen(symbol: string, expiry: string): number | undefined {
+    const sym = String(symbol || "NIFTY").toUpperCase();
+    const exp = String(expiry || "");
+    if (!exp) return undefined;
+    return this.pcrOpenByExpiry.get(`${sym}|${exp}`);
   }
 }
 
@@ -700,4 +823,10 @@ export function wsSubscribeChain(symbol: string, expiry: string) {
 }
 export function wsUnsubscribeChain(symbol: string, expiry: string) {
   _feed?.unsubscribeChain(symbol, expiry);
+}
+export function getCurrentPCR(symbol: string, expiry: string): number | undefined {
+  return _feed?.getPCR(symbol, expiry);
+}
+export function getPCROpen(symbol: string, expiry: string): number | undefined {
+  return _feed?.getPCROpen(symbol, expiry);
 }

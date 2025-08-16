@@ -3,6 +3,11 @@ const withMT = require("@material-tailwind/react/utils/withMT");
 module.exports = withMT({
   important: ".ivy",
   content: ["./index.html", "./src/**/*.{js,jsx,ts,tsx}"],
+  safelist: [
+    // dynamic classes in Topbar conditional templates
+    "text-emerald-600",
+    "text-red-600",
+  ],
   darkMode: "class",
   theme: {
     extend: {

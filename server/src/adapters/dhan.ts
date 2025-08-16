@@ -1,5 +1,5 @@
 // server/src/adapters/dhan.ts
-import type { MarketAdapter, OptionChainRow } from "./types";
+import type { MarketAdapter, OptionChainRow, ExecutionAdapter } from "./types";
 
 /**
  * Dhan v2 Data APIs
@@ -17,9 +17,14 @@ const ACCESS    = process.env.DHAN_ACCESS_TOKEN || "";
 const DEBUG_DHAN = process.env.DEBUG_DHAN === "1";
 
 /** Index underlyings (Option Chain requires index "scrip" id, not instrument security id) */
+export const INDEX_SCRIP: Record<string, number> = {
+  NIFTY: 13,
+  BANKNIFTY: 25,
+  INDIAVIX: 21,
+};
 const UNDERLYING: Record<string, { scrip: number; seg: "IDX_I" }> = {
-  NIFTY: { scrip: 13, seg: "IDX_I" },
-  // BANKNIFTY: { scrip: 25, seg: "IDX_I" }, // enable once verified on your account
+  NIFTY: { scrip: INDEX_SCRIP.NIFTY, seg: "IDX_I" },
+  BANKNIFTY: { scrip: INDEX_SCRIP.BANKNIFTY, seg: "IDX_I" },
 };
 
 function headers(): Record<string, string> {
@@ -173,7 +178,7 @@ async function postJson<T = any>(path: string, body: any): Promise<T> {
  */
 export async function getHistorical(payload: {
   securityId: string;
-  exchangeSegment: "NSE_FNO" | "NSE_EQ" | "NSE_INDEX";
+  exchangeSegment: "NSE_FNO" | "NSE_EQ" | "NSE_INDEX" | "IDX_I";
   instrument: "EQUITY" | "INDEX" | "FUTIDX" | "FUTSTK" | "OPTIDX" | "OPTSTK";
   expiryCode?: number;
   oi?: boolean;
@@ -206,7 +211,7 @@ export async function getHistorical(payload: {
  */
 export async function getHistoricalLastClose(params: {
   securityId: string;
-  exchangeSegment: "NSE_FNO" | "NSE_EQ" | "NSE_INDEX";
+  exchangeSegment: "NSE_FNO" | "NSE_EQ" | "NSE_INDEX" | "IDX_I";
   instrument: "EQUITY" | "INDEX" | "FUTIDX" | "FUTSTK" | "OPTIDX" | "OPTSTK";
   date: string;     // YYYY-MM-DD (we'll query [date, date+1) window)
   withOi?: boolean; // include OI in response if available
@@ -417,5 +422,14 @@ export async function getOptionChainRaw(
 
 export const DhanMarket: MarketAdapter = { name: "dhan", getOptionChain };
 export default DhanMarket;
+
+// Temporary execution adapter stub to satisfy callers expecting DhanExec.
+// Real order placement is not implemented yet.
+export const DhanExec: ExecutionAdapter = {
+  name: "dhan",
+  async placeOrder() {
+    return { ok: false, raw: { error: "DhanExec not implemented" } };
+  },
+};
 
 

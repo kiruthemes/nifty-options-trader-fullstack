@@ -43,7 +43,7 @@ export default function Shell({ theme, onToggleTheme }) {
   const gridCols = collapsed ? 'lg:grid-cols-[4rem,1fr]' : 'lg:grid-cols-[18rem,1fr]'
 
   return (
-    <div className="p-3 max-w-[1600px] mx-auto">
+    <div className="ivy p-3 max-w-[1600px] mx-auto">
       <div className={`grid grid-cols-1 ${gridCols} gap-3`}>
         <Sidebar
           collapsed={collapsed}

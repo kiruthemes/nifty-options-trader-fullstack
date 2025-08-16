@@ -78,6 +78,10 @@ Add these to your styles.css if you don’t already have equivalents:*/
 /* simple modal helpers (optional; most styling is inline on elements) */
 
 @layer components {
+  /* market delta colors (explicit classes so purge never drops them) */
+  .ivy .text-pos { color: rgb(5 150 105) !important; } /* emerald-600 */
+  .ivy .text-neg { color: rgb(220 38 38) !important; } /* red-600 */
+
   /* Buttons */
   .ivy .btn { @apply inline-flex items-center justify-center rounded h-8 px-3 text-sm transition-colors select-none; }
   .ivy .btn-primary { @apply bg-blue-600 text-white hover:bg-blue-700 shadow-sm; }

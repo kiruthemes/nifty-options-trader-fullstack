@@ -98,6 +98,8 @@ export default function Topbar({ theme = "light", onToggleTheme }) {
   // Market chips
   const [spot, setSpot] = useState(),
     [pcNifty, setPcNifty] = useState();
+  const [bank, setBank] = useState(),
+    [pcBank, setPcBank] = useState();
   const [vix, setVix] = useState(),
     [pcVix, setPcVix] = useState();
   const [pcr, setPcr] = useState(),
@@ -107,17 +109,21 @@ export default function Topbar({ theme = "light", onToggleTheme }) {
       const d = e.detail || {};
       if ("spot" in d) setSpot(d.spot);
       if ("prevCloseNifty" in d) setPcNifty(d.prevCloseNifty);
-      if ("vix" in d) setVix(d.vix);
+  if ("bank" in d) setBank(d.bank);
+  if ("prevCloseBank" in d) setPcBank(d.prevCloseBank);
+  if ("vix" in d) setVix(d.vix);
       if ("prevCloseVix" in d) setPcVix(d.prevCloseVix);
-      if ("pcr" in d) setPcr(d.pcr);
-      if ("pcrOpen" in d) setPcrOpen(d.pcrOpen);
+  if ("pcr" in d) setPcr(d.pcr);
+  if ("pcrOpen" in d) setPcrOpen(d.pcrOpen);
     };
     window.addEventListener("market:update", onMarket);
     return () => window.removeEventListener("market:update", onMarket);
   }, []);
-  const niftyChip = useMemo(() => chipDelta("NIFTY ₹", spot, pcNifty), [spot, pcNifty]);
-  const vixChip = useMemo(() => chipDelta("India VIX", vix, pcVix), [vix, pcVix]);
-  const pcrChip = useMemo(() => chipDelta("PCR", pcr, pcrOpen), [pcr, pcrOpen]);
+  // Derived display strings (plain text, include change like old pills)
+  const dNifty = useMemo(() => chipDelta("NIFTY ₹", spot, pcNifty), [spot, pcNifty]);
+  const dBank  = useMemo(() => chipDelta("BANKNIFTY ₹", bank, pcBank), [bank, pcBank]);
+  const dVix   = useMemo(() => chipDelta("VIX", vix, pcVix), [vix, pcVix]);
+  // PCR is shown in Positions pane; not displayed in Topbar
 
   // Provider
   const [provider, setProviderState] = useState("synthetic");
@@ -135,6 +141,38 @@ export default function Topbar({ theme = "light", onToggleTheme }) {
       alert(e.message || "Failed to set provider");
     }
   };
+
+  // Hydrate pills on initial load and when provider/underlying change
+  useEffect(() => {
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ symbol: String(underlying || "NIFTY").toUpperCase() });
+        const res = await fetch(`/api/market/hydrate-topbar?${qs.toString()}`);
+        const j = await res.json().catch(() => ({}));
+        if (Number.isFinite(Number(j.spot))) setSpot(Number(j.spot));
+  if (Number.isFinite(Number(j.vix))) setVix(Number(j.vix));
+  if (Number.isFinite(Number(j.bank))) setBank(Number(j.bank));
+        if (Number.isFinite(Number(j.pcr))) {
+          const val = Number(j.pcr);
+          setPcr(val);
+          let openVal;
+          if (Number.isFinite(Number(j.pcrOpen))) {
+            openVal = Number(j.pcrOpen);
+            setPcrOpen(openVal);
+          }
+          // Share initial PCR via a window event for other views (e.g., Positions header)
+          try {
+            const detail = { pcr: val };
+            if (Number.isFinite(openVal)) detail.pcrOpen = openVal;
+            window.dispatchEvent(new CustomEvent("market:update", { detail }));
+          } catch {}
+        }
+        if (Number.isFinite(Number(j.prevCloseNifty))) setPcNifty(Number(j.prevCloseNifty));
+  if (Number.isFinite(Number(j.prevCloseBank))) setPcBank(Number(j.prevCloseBank));
+        if (Number.isFinite(Number(j.prevCloseVix))) setPcVix(Number(j.prevCloseVix));
+      } catch {}
+    })();
+  }, [underlying, provider]);
 
   // Strategies — current
   const [strategies, setStrategies] = useState([]);
@@ -594,13 +632,13 @@ export default function Topbar({ theme = "light", onToggleTheme }) {
           )}
         </div>
 
-        {/* Chips */}
-        <div className="ml-auto flex items-center gap-2">
-          <span className={niftyChip.cls}>{niftyChip.txt}</span>
-          <span className={vixChip.cls}>{vixChip.txt}</span>
-          <span className={pcrChip.cls} title="OI Put/Call ratio (Δ since open)">
-            {pcrChip.txt}
-          </span>
+  {/* Market snapshot text (no pills) */}
+        <div className="ml-auto flex items-center whitespace-nowrap gap-1 text-[11px] sm:gap-2 sm:text-xs">
+          <span className={`tabular-nums ${dNifty.dir > 0 ? "text-pos" : dNifty.dir < 0 ? "text-neg" : ""}`}>{dNifty.txt}</span>
+          <span className="text-gray-400 dark:text-blue-gray-400">|</span>
+          <span className={`tabular-nums ${dBank.dir > 0 ? "text-pos" : dBank.dir < 0 ? "text-neg" : ""}`}>{dBank.txt}</span>
+          <span className="text-gray-400 dark:text-blue-gray-400">|</span>
+          <span className={`tabular-nums ${dVix.dir > 0 ? "text-pos" : dVix.dir < 0 ? "text-neg" : ""}`}>{dVix.txt}</span>
         </div>
 
         {/* User + Theme */}
@@ -981,15 +1019,19 @@ function UnderlyingDropdown({ value = "NIFTY", onChange }) {
 function chipDelta(label, curr, base) {
   const c = Number(curr),
     b = Number(base);
-  if (!Number.isFinite(c) || !Number.isFinite(b) || b === 0)
-    return { txt: `${label} —`, cls: "chip" };
+  // Show current value even if prevClose missing; only omit delta
+  if (!Number.isFinite(c)) return { txt: `${label} —`, cls: "chip", dir: 0 };
+  if (!Number.isFinite(b) || b === 0) {
+    // no base -> just current value (no change)
+    return { txt: `${label} ${c.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`, cls: "chip", dir: 0 };
+  }
   const chg = c - b,
     pct = (chg / b) * 100,
     up = chg >= 0;
-  const txt = `${label} ${c.toLocaleString("en-IN", { maximumFractionDigits: 2 })}  ${
-    up ? "▲" : "▼"
-  } ${(chg >= 0 ? "+" : "") + chg.toFixed(2)} (${
-    (chg >= 0 ? "+" : "") + Math.abs(pct).toFixed(2)
-  }%)`;
-  return { txt, cls: `chip ${up ? "chip-up" : "chip-down"}` };
+  const sign = chg >= 0 ? "+" : "";
+  const arrow = up ? "▲" : "▼";
+  const txt = `${label} ${c.toLocaleString("en-IN", { maximumFractionDigits: 2 })}  ${arrow} ${sign}${chg.toFixed(2)} (${sign}${Math.abs(pct).toFixed(2)}%)`;
+  return { txt, cls: `chip ${up ? "chip-up" : "chip-down"}`, dir: up ? 1 : -1 };
 }
+
+// (PCR formatting helper removed; PCR shown only in Positions header)

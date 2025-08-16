@@ -187,5 +187,41 @@ export function loadDhanInstrumentMaps(csvPath: string): {
     }
   }
 
+  // Environment overrides for cases where CSV is incomplete or from a different exchange
+  // These ensure we can still resolve critical securityIds without depending on CSV rows.
+  try {
+    const envNifty = (process.env.DHAN_NIFTY_SID || "").trim();
+    const envBank  = (process.env.DHAN_BANKNIFTY_SID || "").trim();
+    const envVix   = (process.env.DHAN_INDIAVIX_SID || process.env.DHAN_VIX_SID || "").trim();
+    const envNiftyFut = (process.env.DHAN_NIFTY_FUT_SID || "").trim();
+    const envBankFut  = (process.env.DHAN_BANKNIFTY_FUT_SID || "").trim();
+
+    if (envNifty) {
+      idxSpot.set("NIFTY", envNifty);
+      if (!bySecId.has(envNifty))
+        bySecId.set(envNifty, { secId: envNifty, exch: "NSE_INDEX", symbol: "NIFTY", isIndex: true });
+    }
+    if (envBank) {
+      idxSpot.set("BANKNIFTY", envBank);
+      if (!bySecId.has(envBank))
+        bySecId.set(envBank, { secId: envBank, exch: "NSE_INDEX", symbol: "BANKNIFTY", isIndex: true });
+    }
+    if (envVix) {
+      idxSpot.set("INDIAVIX", envVix);
+      if (!bySecId.has(envVix))
+        bySecId.set(envVix, { secId: envVix, exch: "NSE_INDEX", symbol: "INDIAVIX", isIndex: true });
+    }
+    if (envNiftyFut) {
+      idxFut.set("NIFTY", envNiftyFut);
+      if (!bySecId.has(envNiftyFut))
+        bySecId.set(envNiftyFut, { secId: envNiftyFut, exch: "NSE_FNO", symbol: "NIFTY", isFut: true });
+    }
+    if (envBankFut) {
+      idxFut.set("BANKNIFTY", envBankFut);
+      if (!bySecId.has(envBankFut))
+        bySecId.set(envBankFut, { secId: envBankFut, exch: "NSE_FNO", symbol: "BANKNIFTY", isFut: true });
+    }
+  } catch {}
+
   return { bySecId, chainIndex, idxSpot, idxFut };
 }

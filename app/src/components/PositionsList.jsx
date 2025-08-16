@@ -26,6 +26,8 @@ export default function PositionsList({
   defaultLots = 1,
   onChangeDefaultLots,
   onUpdateStagedLots,
+  onUpdateStagedOrderType,
+  onUpdateStagedLimitPrice,
   onSquareOff,
   onSquareOffAll,
   onPlaceOne,
@@ -324,7 +326,7 @@ export default function PositionsList({
                       <span className="muted ml-2">Type</span>
                       <select
                         value={l.order_type || "MARKET"}
-                        onChange={(e) => onUpdateStagedLots?.(idx, Number(l.lots || 1)) || (stagedLegs[idx] && (stagedLegs[idx].order_type = e.target.value))}
+                        onChange={(e) => onUpdateStagedOrderType?.(idx, e.target.value)}
                         className="h-7 px-2 rounded border dark:border-blue-gray-700 bg-white dark:bg-blue-gray-900"
                       >
                         <option value="MARKET">Market</option>
@@ -336,8 +338,8 @@ export default function PositionsList({
                           <input
                             type="number"
                             step="0.05"
-                            value={Number(l.limit_price || l.premium || 0)}
-                            onChange={(e) => (stagedLegs[idx] && (stagedLegs[idx].limit_price = Number(e.target.value) || 0))}
+                            value={Number(l.limit_price ?? l.premium ?? 0)}
+                            onChange={(e) => onUpdateStagedLimitPrice?.(idx, Number(e.target.value) || 0)}
                             className="w-24 h-7 text-right rounded border dark:border-blue-gray-700 bg-white dark:bg-blue-gray-900"
                           />
                         </>

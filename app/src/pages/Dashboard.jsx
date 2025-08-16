@@ -349,6 +349,22 @@ export default function Dashboard() {
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { lots: n });
   };
 
+  const updateStagedOrderType = (idx, orderType) => {
+    setStagedLegs((prev) => {
+      const copy = [...prev];
+      if (copy[idx]) copy[idx] = { ...copy[idx], order_type: String(orderType || "MARKET").toUpperCase() };
+      return copy;
+    });
+  };
+
+  const updateStagedLimitPrice = (idx, price) => {
+    setStagedLegs((prev) => {
+      const copy = [...prev];
+      if (copy[idx]) copy[idx] = { ...copy[idx], limit_price: Number(price) };
+      return copy;
+    });
+  };
+
   const placeStagedOne = async (idx) => {
     const leg = stagedLegs[idx];
     const entry = nowPrice(leg);
@@ -386,6 +402,13 @@ export default function Dashboard() {
     const sign = leg.side === "BUY" ? 1 : -1;
     const pnl = sign * (exit - (leg.premium || 0)) * (leg.lots || 1) * DEFAULT_LOT_SIZE;
     setRealized((r) => r + pnl);
+    // Send closing order to brokers (reverse side)
+    try {
+      if (strategyId) {
+        const closeOrder = mkOrderFromLeg({ ...leg, side: leg.side === "BUY" ? "SELL" : "BUY", order_type: "MARKET", limit_price: undefined }, "CLOSE");
+        await placeOrdersForStrategy(strategyId, [closeOrder]);
+      }
+    } catch {}
     if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "CLOSED", exitPrice: exit });
   };
 
@@ -398,6 +421,13 @@ export default function Dashboard() {
       const exit = nowPrice(leg);
       const sign = leg.side === "BUY" ? 1 : -1;
       sum += sign * (exit - (leg.premium || 0)) * (leg.lots || 1) * DEFAULT_LOT_SIZE;
+      // Fire close order per leg
+      try {
+        if (strategyId) {
+          const closeOrder = mkOrderFromLeg({ ...leg, side: leg.side === "BUY" ? "SELL" : "BUY", order_type: "MARKET", limit_price: undefined }, "CLOSE");
+          await placeOrdersForStrategy(strategyId, [closeOrder]);
+        }
+      } catch {}
       if (leg?.id) await StrategyStore.updateLeg(leg.id, { status: "CLOSED", exitPrice: exit });
     }
     setRealized((r) => r + sum);
@@ -478,6 +508,8 @@ export default function Dashboard() {
               defaultLots={defaultLots}
               onChangeDefaultLots={setDefaultLots}
               onUpdateStagedLots={updateStagedLots}
+              onUpdateStagedOrderType={updateStagedOrderType}
+              onUpdateStagedLimitPrice={updateStagedLimitPrice}
               defaultExpiry={selectedExpiry || undefined}
               strategyId={strategyId}
             />

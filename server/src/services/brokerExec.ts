@@ -1,6 +1,7 @@
 // server/src/services/brokerExec.ts
 import prisma from "../db";
 import { getBrokerSecrets, redact } from "../utils/vault";
+import fetch from "node-fetch";
 
 /**
  * Normalized order shape (what your UI already sends to /trade or similar)
@@ -53,14 +54,47 @@ const dhanAdapter: BrokerAdapter = {
       };
     }
 
-    // TODO: Implement real Dhan order placement here.
-    // Pseudo:
-    // const resp = await fetch(`${process.env.DHAN_API_BASE}/orders`, { ...headers with secrets.accessToken ... body: map });
-    // const data = await resp.json();
-    // if (!resp.ok) throw new Error(data?.message || "Dhan order failed");
-    // return { providerOrderId: data.orderId, raw: data };
+    // Map NormalizedOrder -> Dhan v2 order payload
+    // Docs: https://dhanhq.co/docs/v2/orders/
+    const side = order.side === "BUY" ? "BUY" : "SELL";
+    const orderType = order.order_type === "LIMIT" ? "LIMIT" : "MARKET";
+    const productType = (process.env.DHAN_PRODUCT_TYPE || order.product || "CNC").toUpperCase();
+    // Dhan expects securityId; we support symbol/strike/expiry via server-side mapping ideally.
+    // For MVP, rely on option tradingSymbol if provided via secrets.meta or order.action payload; otherwise send error.
+    const meta = secrets.meta || {};
+    const securityId = meta.securityId || meta.secId;
+    if (!securityId) {
+      throw new Error("Dhan securityId missing for order. Attach via BrokerAccount.metaJson");
+    }
 
-    throw new Error("Dhan adapter not implemented (set BROKER_SIMULATE=true for dev).");
+    const body: any = {
+      transactionType: side, // BUY/SELL
+      exchangeSegment: "NSE_FNO", // F&O by default for options
+      productType, // CNC for delivery as requested
+      orderType, // MARKET/LIMIT
+      validity: "DAY",
+      securityId,
+      quantity: Math.max(1, Number(order.lots || 1)) * Math.max(1, Number(order.lot_size || 1)),
+      disclosedQuantity: 0,
+    };
+    if (orderType === "LIMIT" && Number.isFinite(Number(order.price))) body.price = Number(order.price);
+
+    const url = (process.env.DHAN_API_BASE || "https://api.dhan.co") + "/orders";
+    const headers: any = {
+      "Content-Type": "application/json",
+      "Client-Id": (process.env.DHAN_CLIENT_ID || secrets.clientId || "").trim(),
+      "Access-Token": (secrets.accessToken || process.env.DHAN_ACCESS_TOKEN || "").trim(),
+    };
+    if (!headers["Access-Token"]) throw new Error("Dhan access token missing");
+    if (!headers["Client-Id"]) throw new Error("Dhan client id missing");
+
+    const resp = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const data: any = await resp.json().catch(() => ({} as any));
+    if (!resp.ok) {
+      throw new Error((data && (data.message || data.error)) || `Dhan order failed (${resp.status})`);
+    }
+    const providerOrderId = (data && (data.orderId || (data.data && data.data.orderId))) || undefined;
+    return { providerOrderId, raw: data };
   },
 };
 

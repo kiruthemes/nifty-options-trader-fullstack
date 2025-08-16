@@ -129,3 +129,63 @@ router.post("/place-order", auth, async (req: Request, res: Response) => {
 });
 
 export default router;
+
+// ---- Orders listing and retry ----
+
+// GET /api/strategies/:id/orders
+router.get("/strategies/:id/orders", auth, async (req: Request, res: Response) => {
+  try {
+    const userId = uid(req);
+    const strategyId = Number(req.params.id);
+    if (!Number.isFinite(strategyId)) return res.status(400).json({ error: "Invalid strategy id" });
+
+    const strat = await prisma.strategy.findFirst({ where: { id: strategyId, userId } });
+    if (!strat) return res.status(404).json({ error: "Strategy not found" });
+
+    const items = await prisma.order.findMany({
+      where: { strategyId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        brokerAccountId: true,
+        provider: true,
+        providerOrderId: true,
+        status: true,
+        requestJson: true,
+        responseJson: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    return res.json({ items });
+  } catch (e: any) {
+    const code = Number(e?.status) || 500;
+    return res.status(code).json({ error: String(e?.message || "Failed to list orders") });
+  }
+});
+
+// POST /api/orders/:id/retry
+router.post("/orders/:id/retry", auth, async (req: Request, res: Response) => {
+  try {
+    const userId = uid(req);
+    const orderId = Number(req.params.id);
+    if (!Number.isFinite(orderId)) return res.status(400).json({ error: "Invalid id" });
+
+    const row = await prisma.order.findFirst({
+      where: { id: orderId, strategy: { userId } },
+      include: { strategy: true, broker: true },
+    });
+    if (!row) return res.status(404).json({ error: "Order not found" });
+
+    // Reuse the existing placeOrdersForStrategy over the same strategy and single order
+    let orderObj: any = {};
+    try { orderObj = JSON.parse(row.requestJson || "{}"); } catch {}
+    if (!orderObj || !orderObj.symbol) return res.status(400).json({ error: "Original order payload missing" });
+
+    const results = await placeOrdersForStrategy(row.strategyId, [orderObj]);
+    return res.json({ ok: true, results });
+  } catch (e: any) {
+    const code = Number(e?.status) || 500;
+    return res.status(code).json({ error: String(e?.message || "Failed to retry order") });
+  }
+});

@@ -385,6 +385,18 @@ export default function Dashboard() {
     try { window.dispatchEvent(new CustomEvent("orders:updated")); } catch {}
   };
 
+  const removeStagedOne = async (idx) => {
+    const leg = stagedLegs[idx];
+    setStagedLegs((prev) => prev.filter((_, i) => i !== idx));
+    if (leg?.id) await StrategyStore.deleteLeg(leg.id);
+  };
+
+  const clearStagedAll = async () => {
+    const ids = stagedLegs.map((l) => l.id).filter(Boolean);
+    setStagedLegs([]);
+    for (const id of ids) await StrategyStore.deleteLeg(id);
+  };
+
   const squareOffIndex = async (idx) => {
     const leg = liveLegs[idx];
     const exit = nowPrice(leg);
